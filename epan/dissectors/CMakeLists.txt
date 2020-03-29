@@ -1560,6 +1560,7 @@ set(DISSECTOR_SRC
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pflog.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pgm.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pgsql.c
+	${CMAKE_CURRENT_SOURCE_DIR}/packet-pidp11.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pim.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pingpongprotocol.c
 	${CMAKE_CURRENT_SOURCE_DIR}/packet-pktap.c

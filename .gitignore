@@ -13,6 +13,7 @@
 
 # Compiled or generated source #
 ################################
+build
 *.dll
 *.exe
 *.la
