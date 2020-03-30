@@ -115,6 +115,8 @@ static int		hf_pidp11_getpanelinfo_in_count = -1;
 static int		hf_pidp11_getpanelinfo_out_count = -1;
 static int		hf_pidp11_getpanelinfo_in_bytes = -1;
 static int		hf_pidp11_getpanelinfo_out_bytes = -1;
+static int		hf_pidp11_getcontrolinfo_index = -1;
+static int		hf_pidp11_getcontrolinfo_name = -1;
 
 // Values of the fields.
 static uint32_t		pidp11_sequence_number = -1;
@@ -123,6 +125,7 @@ static int		pidp11_rpc_version = -1;
 static int		pidp11_program_number = -1;
 static int		pidp11_blinken_version = -1;
 static int		pidp11_blinken_function = -1;
+static int		pidp11_control_index = -1;
 
 struct pidp11_request_key {
 	guint32		conversation;
@@ -139,6 +142,8 @@ struct pidp11_request_val {
 	int		pidp11_program_number;
 	int		pidp11_blinken_version;
 	int		pidp11_blinken_function;
+
+	int		pidp11_control_index;
 };
 
 static wmem_map_t *pidp11_request_hash = NULL;
@@ -266,6 +271,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		} else {
 			return 0;
 		}
+
+		if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
+			pidp11_control_index = tvb_get_ntohl(tvb, 0x2c);
+		}
 	} else if(pidp11_direction == 1) {
 		// To client.
 		if(pidp11_rpc_version != 0) {
@@ -312,6 +321,11 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			request_val->pidp11_blinken_version	= pidp11_blinken_version;
 			request_val->pidp11_blinken_function	= pidp11_blinken_function;
 
+			request_val->pidp11_control_index	= 0;
+			if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
+				request_val->pidp11_control_index = pidp11_control_index;
+			}
+
 			wmem_map_insert(pidp11_request_hash, new_request_key, request_val);
 		}
 
@@ -347,7 +361,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		len = 4;
 		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_direction, tvb, offset, len, ENC_BIG_ENDIAN);
 
-		offset += len;
 		proto_tree_add_uint(pidp11_tree, hf_pidp11_blinken_function, tvb, 0, 0, request_val->pidp11_blinken_function);
 
 		if(PRIMARY(request_val->pidp11_blinken_function)) {
@@ -355,16 +368,15 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			len = 4;
 			proto_tree_add_uint(pidp11_tree, hf_pidp11_error_code, tvb, offset, len, ENC_BIG_ENDIAN);
 
+			offset += len;
 			if(request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETINFO) {
 				// It would be better to honor the \n chars here.  len is equal to the total length of the
 				// string, including the 4-byte size field preceding the string characters.
 				//
 				// Note that strings are padded with nulls to the next 4-byte boundary.
-				offset = 0x1c;
 				len = 4 + (((tvb_get_ntohl(tvb, offset) + 3) / 4) * 4);
 				proto_tree_add_item(pidp11_tree, hf_pidp11_getinfo_info, tvb, offset, 4, ENC_UTF_8 | ENC_BIG_ENDIAN);
 			} else if(request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANELINFO) {
-				offset = 0x1c;
 				len = 4 + (((tvb_get_ntohl(tvb, offset) + 3) / 4) * 4);
 				proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_name, tvb, offset, 4, ENC_UTF_8 | ENC_BIG_ENDIAN);
 
@@ -383,9 +395,16 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				offset += len;
 				len = 4;
 				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
-
-				offset += len;
 			} else if(request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
+				// We have to add each control to a list, so we can find it again, when we interpret the
+				// control values.  If the capture doesn't include these messages, then we won't be able
+				// to put names to the control values.  We might pre-populate the list with the expected
+				// names and show them with ? to indicate uncertainty...
+				proto_tree_add_uint(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, 0, 0, request_val->pidp11_control_index);
+
+				len = 4 + (((tvb_get_ntohl(tvb, offset) + 3) / 4) * 4);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_name, tvb, offset, 4, ENC_UTF_8 | ENC_BIG_ENDIAN);
+
 			} else if(request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
 			} else if(request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
 			}
@@ -421,7 +440,11 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		len = 4;
 		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_blinken_function, tvb, offset, len, ENC_BIG_ENDIAN);
 
-		offset += len;
+		if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
+			offset = 0x2c;
+			len = 4;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+		}
 	}
 
 	// Column data
@@ -452,11 +475,13 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_blinken_function,		{ "Blinken Function",	"pidp11.blink_func",	FT_UINT32,	BASE_NONE,	VALS(blinken_function), 0, NULL, HFILL } },
 		{ &hf_pidp11_error_code,		{ "Error Code",		"pidp11.error_code",	FT_UINT32,	BASE_HEX,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getinfo_info,		{ "Info",		"pidp11.info",		FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getpanelinfo_name,		{ "Name",		"pidp11.name",		FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_getpanelinfo_name,		{ "Panel Name",		"pidp11.panel_name",	FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_in_count,	{ "Input Count",	"pidp11.in_count",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_out_count,	{ "Output Count",	"pidp11.out_count",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_in_bytes,	{ "Input Bytes",	"pidp11.in_bytes",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_out_bytes,	{ "Output Bytes",	"pidp11.out_bytes",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_getcontrolinfo_index,	{ "Control Index",	"pidp11.control_index",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_getcontrolinfo_name,	{ "Control Name",	"pidp11.control_name",	FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 	};
 
 	// Setup protocol subtree array.
