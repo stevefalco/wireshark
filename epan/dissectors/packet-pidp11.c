@@ -262,8 +262,8 @@ static int		pidp11_control_index			= -1;
 static wmem_map_t *pidp11_request_hash = NULL;
 static wmem_map_t *control_request_hash = NULL;
 
-// Initialize the subtree pointer(s).
-static gint ett_top_level = -1;
+// Initialize the subtree pointer.
+static gint top_level = -1;
 
 static char *low_funcs[] = {
 	"Get Info",
@@ -650,7 +650,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
 		DEBUG("added server tree");
 
-		pidp11_tree = proto_item_add_subtree(ti, ett_top_level);
+		pidp11_tree = proto_item_add_subtree(ti, top_level);
 
 		len = SU;
 		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
@@ -781,7 +781,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
 		DEBUG("added client tree");
 
-		pidp11_tree = proto_item_add_subtree(ti, ett_top_level);
+		pidp11_tree = proto_item_add_subtree(ti, top_level);
 
 		len = SU;
 		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
@@ -888,7 +888,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 void
 proto_register_pidp11(void)
 {
-	// Setup list of header fields	See Section 1.5 of README.dissector for details.
+	// Setup list of header fields.  Unfortunately, we cannot add these dynamically,
+	// so we have to create an arbitrary number of "hf_pidp11_getcontrolvalue"
+	// elements.  We should only need 16 of them, because there are 16 outputs (and
+	// 13 inputs) but I've added a few extras.
 	static hf_register_info hf[] = {
 		{ &hf_pidp11_sequence_number,		{ "Sequence Number",	"pidp11.seq_num",	FT_UINT32,	BASE_HEX,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_direction,			{ "Direction",		"pidp11.direction",	FT_UINT32,	BASE_NONE,	VALS(RPC_direction), 0, NULL, HFILL } },
@@ -937,8 +940,8 @@ proto_register_pidp11(void)
 	};
 
 	// Setup protocol subtree array.
-	static gint *ett[] = {
-		&ett_top_level,
+	static gint *sta[] = {
+		&top_level,
 	};
 
 	DEBUG("start");
@@ -948,7 +951,7 @@ proto_register_pidp11(void)
 
 	// Register the header fields and subtrees.
 	proto_register_field_array(proto_pidp11, hf, array_length(hf));
-	proto_register_subtree_array(ett, array_length(ett));
+	proto_register_subtree_array(sta, array_length(sta));
 
 	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), pidp11_hash, pidp11_equal);
 	control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
