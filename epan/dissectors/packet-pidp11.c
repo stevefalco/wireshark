@@ -49,7 +49,9 @@
 #define TERTIARY_MAX	RPC_TEST_DATA_FROM_SERVER
 #define TERTIARY(a)	(((a) >= TERTIARY_MIN) && ((a) <= TERTIARY_MAX))
 
-#define SU	(sizeof(uint32_t))
+#define SU		(sizeof(uint32_t))
+
+#define MASK(n)		((1 << (n)) - 1)
 
 static const value_string blinken_function[] = {
 	{ RPC_BLINKENLIGHT_API_GETINFO,			"RPC_BLINKENLIGHT_API_GETINFO"},
@@ -203,6 +205,9 @@ static int		pidp11_blinken_version = -1;
 static int		pidp11_blinken_function = -1;
 static int		pidp11_control_index = -1;
 
+static int		input_position = 0;
+static int		output_position = 0;
+
 // Expected controls.
 static int		input_count = 13;
 static int		output_count = 16;
@@ -332,6 +337,121 @@ control_hash(gconstpointer v)
 	return val;
 }
 
+static void
+insert_one_control(
+		int		is_input,
+		char		*name,
+		int		radix,
+		int		bits,
+		int		bytes
+		)
+{
+	struct control_request_key control_request_key;
+	struct control_request_key *new_control_request_key;
+	struct control_request_val *control_request_val = NULL;
+
+	char *p;
+	int name_len = strlen(name) + 1; // Include space for the null.
+	int position;
+	wmem_map_t *control_request_hash;
+
+	DEBUG("insert_one_control begins");
+
+	p = (char *)wmem_alloc(wmem_epan_scope(), name_len);
+	strncpy(p, name, name_len);
+
+	if(is_input) {
+		position = input_position++;
+		control_request_hash = input_control_request_hash;
+	} else {
+		position = output_position++;
+		control_request_hash = output_control_request_hash;
+	}
+	control_request_key.position = position;
+	DEBUG("insert_one_control ready to lookup");
+	control_request_val = (struct control_request_val *) wmem_map_lookup(control_request_hash, &control_request_key);
+	DEBUG("insert_one_control did lookup");
+
+	if(control_request_val) {
+		// Control already exists, but might not match, so free it before inserting a new one.
+		if(control_request_val->pidp11_control_name) {
+			DEBUG("insert_one_control ready to free");
+			wmem_free(wmem_epan_scope(), control_request_val->pidp11_control_name);
+			DEBUG("insert_one_control did free");
+		}
+		DEBUG("insert_one_control ready to remove");
+		wmem_map_remove(control_request_hash, &control_request_key);
+		DEBUG("insert_one_control did remove");
+	}
+
+	DEBUG("inserting control %d, %s", position, p);
+	DEBUG("insert_one_control ready for new key");
+	new_control_request_key = wmem_new(wmem_epan_scope(), struct control_request_key);
+	DEBUG("insert_one_control did new key");
+	*new_control_request_key = control_request_key;
+
+	DEBUG("insert_one_control ready for new control");
+	control_request_val = wmem_new(wmem_epan_scope(), struct control_request_val);
+	DEBUG("insert_one_control did new control");
+	control_request_val->position			= position;
+	control_request_val->pidp11_control_name	= p;
+	control_request_val->pidp11_control_radix	= radix;
+	control_request_val->pidp11_control_bits	= bits;
+	control_request_val->pidp11_control_bytes	= bytes;
+
+	DEBUG("insert_one_control ready to insert");
+	wmem_map_insert(control_request_hash, new_control_request_key, control_request_val);
+	DEBUG("insert_one_control did insert");
+}
+
+// In many cases, the capture will not include the RPC_BLINKENLIGHT_API_GETCONTROLINFO messages.
+// We cannot associate names with bit-patterns in the RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES
+// and RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES unless we have that data.  So, while it is a
+// *HACK*, we insert fake names here, based on what we think would have been in the missing
+// RPC_BLINKENLIGHT_API_GETCONTROLINFO messages.
+//
+// If we do capture the RPC_BLINKENLIGHT_API_GETCONTROLINFO messages, those names will replace the
+// fake ones that we are adding here.
+//
+// We add the names in parenthesis here, to indicate that they are inferred, rather than actual.
+static void
+fake_controls(void)
+{
+	input_position = 0;
+	output_position = 0;
+
+	insert_one_control(TRUE, "(SR)",			8, 22, 3);
+	insert_one_control(TRUE, "(LAMPTEST)",			8, 1, 1);
+	insert_one_control(TRUE, "(LOAD_ADRS)",			8, 1, 1);
+	insert_one_control(TRUE, "(EXAM)",			8, 1, 1);
+	insert_one_control(TRUE, "(DEPOSIT)",			8, 1, 1);
+	insert_one_control(TRUE, "(CONT)",			8, 1, 1);
+	insert_one_control(TRUE, "(HALT)",			8, 1, 1);
+	insert_one_control(TRUE, "(S_BUS_CYCLE)",		8, 1, 1);
+	insert_one_control(TRUE, "(START)",			8, 1, 1);
+	insert_one_control(TRUE, "(ADDR_SELECT)",		8, 3, 1);
+	insert_one_control(TRUE, "(DATA_SELECT)",		8, 2, 1);
+	insert_one_control(TRUE, "(PANEL_LOCK)",		8, 1, 1);
+	insert_one_control(TRUE, "(POWER)",			8, 1, 1);
+
+	insert_one_control(FALSE, "(ADDRESS)",			8, 22, 3);
+	insert_one_control(FALSE, "(DATA)",			8, 16, 2);
+	insert_one_control(FALSE, "(PARITY_HIGH)",		8, 1, 1);
+	insert_one_control(FALSE, "(PARITY_LOW)",		8, 1, 1);
+	insert_one_control(FALSE, "(PAR_ERR)",			8, 1, 1);
+	insert_one_control(FALSE, "(ADRS_ERR)",			8, 1, 1);
+	insert_one_control(FALSE, "(RUN)",			8, 1, 1);
+	insert_one_control(FALSE, "(PAUSE)",			8, 1, 1);
+	insert_one_control(FALSE, "(MASTER)",			8, 1, 1);
+	insert_one_control(FALSE, "(MMR0_MODE)",		8, 3, 1);
+	insert_one_control(FALSE, "(DATA_SPACE)",		8, 1, 1);
+	insert_one_control(FALSE, "(ADDRESSING_16)",		8, 1, 1);
+	insert_one_control(FALSE, "(ADDRESSING_18)",		8, 1, 1);
+	insert_one_control(FALSE, "(ADDRESSING_22)",		8, 1, 1);
+	insert_one_control(FALSE, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
+	insert_one_control(FALSE, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
+}
+
 /* Code to actually dissect the packets */
 static int
 dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
@@ -361,9 +481,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 	int		value_bytes_len;
 	uint32_t	*value_bytes_val;
 	uint32_t	value;
-
-	static int	input_position = 0;
-	static int	output_position = 0;
 
 	DEBUG("dissect_pidp11");
 
@@ -446,10 +563,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		DEBUG("not visited yet");
 		if(!conversation_request_val && (pidp11_direction == 0)) {
 			DEBUG("no val and dir == to server, inserting request %d", pinfo->num);
-			new_conversation_request_key = wmem_new(wmem_file_scope(), struct pidp11_request_key);
+			new_conversation_request_key = wmem_new(wmem_epan_scope(), struct pidp11_request_key);
 			*new_conversation_request_key = conversation_request_key;
 
-			conversation_request_val = wmem_new(wmem_file_scope(), struct pidp11_request_val);
+			conversation_request_val = wmem_new(wmem_epan_scope(), struct pidp11_request_val);
 			conversation_request_val->req_num			= pinfo->num;
 			conversation_request_val->rep_num			= 0;
 			conversation_request_val->pidp11_sequence_number	= pidp11_sequence_number;
@@ -599,10 +716,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				}
 
 				DEBUG("inserting control %d, %s", position, name);
-				new_control_request_key = wmem_new(wmem_file_scope(), struct control_request_key);
+				new_control_request_key = wmem_new(wmem_epan_scope(), struct control_request_key);
 				*new_control_request_key = control_request_key;
 
-				control_request_val = wmem_new(wmem_file_scope(), struct control_request_val);
+				control_request_val = wmem_new(wmem_epan_scope(), struct control_request_val);
 				control_request_val->position			= position;
 				control_request_val->pidp11_control_name	= name;
 				control_request_val->pidp11_control_radix	= radix;
@@ -644,13 +761,13 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 							DEBUG("input %d, position %d, >>>%s<<< = %09o", i, control_request_val->position, control_request_val->pidp11_control_name, value);
 							if(control_request_val->pidp11_control_radix == 8) {
 								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
-										"", "%s = 0%09o", control_request_val->pidp11_control_name, value);
+										"", "%s = 0%09o", control_request_val->pidp11_control_name, value & MASK(control_request_val->pidp11_control_bits));
 							} else if(control_request_val->pidp11_control_radix == 10) {
 								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
-										"", "%s = %8d", control_request_val->pidp11_control_name, value);
+										"", "%s = %8d", control_request_val->pidp11_control_name, value & MASK(control_request_val->pidp11_control_bits));
 							} else if(control_request_val->pidp11_control_radix == 16) {
 								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
-										"", "%s = 0x%08x", control_request_val->pidp11_control_name, value);
+										"", "%s = 0x%08x", control_request_val->pidp11_control_name, value & MASK(control_request_val->pidp11_control_bits));
 							}
 						}
 					}
@@ -743,13 +860,13 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 						DEBUG("output %d, position %d, >>>%s<<< = %09o", i, control_request_val->position, control_request_val->pidp11_control_name, value);
 						if(control_request_val->pidp11_control_radix == 8) {
 							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * control_request_val->pidp11_control_bytes,
-									"", "%s = 0%09o", control_request_val->pidp11_control_name, value);
+									"", "%s = 0%09o", control_request_val->pidp11_control_name, value & MASK(control_request_val->pidp11_control_bits));
 						} else if(control_request_val->pidp11_control_radix == 10) {
 							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * control_request_val->pidp11_control_bytes,
-									"", "%s = %8d", control_request_val->pidp11_control_name, value);
+									"", "%s = %8d", control_request_val->pidp11_control_name, value & MASK(control_request_val->pidp11_control_bits));
 						} else if(control_request_val->pidp11_control_radix == 16) {
 							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * control_request_val->pidp11_control_bytes,
-									"", "%s = 0x%08x", control_request_val->pidp11_control_name, value);
+									"", "%s = 0x%08x", control_request_val->pidp11_control_name, value & MASK(control_request_val->pidp11_control_bits));
 						}
 					}
 				}
@@ -833,7 +950,6 @@ proto_register_pidp11(void)
 	};
 
 	DEBUG("proto_register_pidp11");
-	/* Setup protocol expert items */
 
 	/* Register the protocol name and description */
 	proto_pidp11 = proto_register_protocol("PiDP-11", "PiDP-11", "pidp-11");
@@ -866,9 +982,12 @@ proto_register_pidp11(void)
 	prefs_register_bool_preference(pidp11_module, "show_hex", "Display numbers in Hex", "Enable to display numerical values in hexadecimal.", &pref_hex);
 	prefs_register_uint_preference(pidp11_module, "udp.port", "pidp11 UDP Port", " pidp11 UDP port if other than the default", 10, &udp_port_pref);
 
-	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_file_scope(), pidp11_hash, pidp11_equal);
-	input_control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_file_scope(), control_hash, control_equal);
-	output_control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_file_scope(), control_hash, control_equal);
+	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), pidp11_hash, pidp11_equal);
+	input_control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
+	output_control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
+
+	// In case we don't learn these from the packet stream, start with some likely defaults.
+	fake_controls();
 }
 
 /* Heuristics test */
