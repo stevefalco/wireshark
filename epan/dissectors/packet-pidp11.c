@@ -83,7 +83,6 @@ static const value_string component_type[] = {
 };
 
 static const value_string component_radix[] = {
-	{ 1, "Binary"},
 	{ 8, "Octal"},
 	{ 10, "Decimal"},
 	{ 16, "Hexadecimal"},
@@ -145,6 +144,7 @@ static int		hf_pidp11_getcontrolinfo_type = -1;
 static int		hf_pidp11_getcontrolinfo_radix = -1;
 static int		hf_pidp11_getcontrolinfo_bits = -1;
 static int		hf_pidp11_getcontrolinfo_bytes = -1;
+static int		hf_pidp11_getcontrolvalue_bytes = -1;
 static int		hf_pidp11_getcontrolvalue_0 = -1;
 static int		hf_pidp11_getcontrolvalue_1 = -1;
 static int		hf_pidp11_getcontrolvalue_2 = -1;
@@ -613,8 +613,11 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
 				// Nothing to do.
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
+				len = SU;
+				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolvalue_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 				value_bytes_len = tvb_get_ntohl(tvb, offset);
 				DEBUG("value_bytes_len=%d", value_bytes_len);
+
 				if((value_bytes_val = (uint32_t *)malloc(value_bytes_len * SU))) {
 					for(i = 0; i < value_bytes_len; i++) {
 						offset += SU;
@@ -639,8 +642,16 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 								value |= value_bytes_val[k++] << (j * 8);
 							}
 							DEBUG("input %d, position %d, >>>%s<<< = %09o", i, control_request_val->position, control_request_val->pidp11_control_name, value);
-							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
-									"", "input %d, >>>%s<<< = %09o", i, control_request_val->pidp11_control_name, value);
+							if(control_request_val->pidp11_control_radix == 8) {
+								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
+										"", "%s = 0%09o", control_request_val->pidp11_control_name, value);
+							} else if(control_request_val->pidp11_control_radix == 10) {
+								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
+										"", "%s = %8d", control_request_val->pidp11_control_name, value);
+							} else if(control_request_val->pidp11_control_radix == 16) {
+								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
+										"", "%s = 0x%08x", control_request_val->pidp11_control_name, value);
+							}
 						}
 					}
 				}
@@ -691,49 +702,63 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			offset += len;
 			len = SU;
 			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
-		}
+		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
+			len = SU;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
 
+			offset += len;
+			len = SU;
+			// This seems to be an error code, because of a common structure.  But it is meaningless here
+			// so we skip it.
 
+			offset += len;
+			len = SU;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolvalue_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
+			value_bytes_len = tvb_get_ntohl(tvb, offset);
+			DEBUG("value_bytes_len=%d", value_bytes_len);
 
+			if((value_bytes_val = (uint32_t *)malloc(value_bytes_len * SU))) {
+				for(i = 0; i < value_bytes_len; i++) {
+					offset += SU;
+					value_bytes_val[i] = tvb_get_ntohl(tvb, offset);
+					DEBUG("value_bytes_val[%d]=%d", i, value_bytes_val[i]);
+				}
 
-
-
-
-#if 0
-				value_bytes_len = tvb_get_ntohl(tvb, offset);
-				DEBUG("value_bytes_len=%d", value_bytes_len);
-				if((value_bytes_val = (uint32_t *)malloc(value_bytes_len * SU))) {
-					for(i = 0; i < value_bytes_len; i++) {
-						offset += SU;
-						value_bytes_val[i] = tvb_get_ntohl(tvb, offset);
-						DEBUG("value_bytes_val[%d]=%d", i, value_bytes_val[i]);
+				k = 0;
+				for(i = 0; i < output_count; i++) {
+					if(i >= NUM_SLOTS) {
+						goto QUIT_OUTPUT;
 					}
-
-					k = 0;
-					for(i = 0; i < input_count; i++) {
-						if(i >= NUM_SLOTS) {
-							goto QUIT_OUTPUT;
-						}
-						control_request_key.position = i;
-						control_request_val = (struct control_request_val *) wmem_map_lookup(input_control_request_hash, &control_request_key);
-						if(control_request_val) {
-							value = 0;
-							k2 = k;
-							for(j = 0; j < control_request_val->pidp11_control_bytes; j++) {
-								if(k >= value_bytes_len) {
-									goto QUIT_OUTPUT;
-								}
-								value |= value_bytes_val[k++] << (j * 8);
+					control_request_key.position = i;
+					control_request_val = (struct control_request_val *) wmem_map_lookup(output_control_request_hash, &control_request_key);
+					if(control_request_val) {
+						value = 0;
+						k2 = k;
+						for(j = 0; j < control_request_val->pidp11_control_bytes; j++) {
+							if(k >= value_bytes_len) {
+								goto QUIT_OUTPUT;
 							}
-							DEBUG("input %d, position %d, >>>%s<<< = %09o", i, control_request_val->position, control_request_val->pidp11_control_name, value);
-							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * control_request_val->pidp11_control_bytes,
-									"", "input %d, >>>%s<<< = %09o", i, control_request_val->pidp11_control_name, value);
+							value |= value_bytes_val[k++] << (j * 8);
+						}
+						DEBUG("output %d, position %d, >>>%s<<< = %09o", i, control_request_val->position, control_request_val->pidp11_control_name, value);
+						if(control_request_val->pidp11_control_radix == 8) {
+							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * control_request_val->pidp11_control_bytes,
+									"", "%s = 0%09o", control_request_val->pidp11_control_name, value);
+						} else if(control_request_val->pidp11_control_radix == 10) {
+							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * control_request_val->pidp11_control_bytes,
+									"", "%s = %8d", control_request_val->pidp11_control_name, value);
+						} else if(control_request_val->pidp11_control_radix == 16) {
+							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * control_request_val->pidp11_control_bytes,
+									"", "%s = 0x%08x", control_request_val->pidp11_control_name, value);
 						}
 					}
 				}
-				QUIT_OUTPUT: ;
-#endif
-
+			}
+			QUIT_OUTPUT: ;
+		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
+			len = SU;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+		}
 	}
 
 	// Column data
@@ -777,6 +802,7 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_getcontrolinfo_radix,	{ "Control Radix",	"pidp11.control_radix",	FT_UINT32,	BASE_NONE,	VALS(component_radix), 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolinfo_bits,	{ "Control Bits",	"pidp11.control_bits",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolinfo_bytes,	{ "Control Bytes",	"pidp11.control_bytes",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_getcontrolvalue_bytes,	{ "Control Bytes",	"pidp11.control_bytes",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_0,		{ "Control 0",		"pidp11.control_0",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_1,		{ "Control 1",		"pidp11.control_1",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_2,		{ "Control 2",		"pidp11.control_2",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
