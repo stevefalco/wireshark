@@ -92,9 +92,14 @@ static const value_string component_radix[] = {
 };
 
 #ifdef ENABLE_DEBUG
-#define DEBUG(fmt, ... ) logit(fmt, ##__VA_ARGS__ )
+#define DEBUG(fmt, ... ) logit(__func__, __LINE__, fmt, ##__VA_ARGS__ )
 
-static void logit(const char *format, ...)
+static void logit(
+		const char *func,
+		int line,
+		const char *format,
+	       	...
+		)
 {
 	va_list		ap;
 	static FILE	*logfp = 0;
@@ -106,6 +111,7 @@ static void logit(const char *format, ...)
 	}
 
 	if(logfp) {
+		fprintf(logfp, "%s %d:", func, line);
 		va_start(ap, format);
 		vfprintf(logfp, format, ap);
 		va_end(ap);
@@ -205,9 +211,6 @@ static int		pidp11_blinken_version = -1;
 static int		pidp11_blinken_function = -1;
 static int		pidp11_control_index = -1;
 
-static int		input_position = 0;
-static int		output_position = 0;
-
 // Expected controls.
 static int		input_count = 13;
 static int		output_count = 16;
@@ -237,6 +240,7 @@ struct control_request_key {
 
 struct control_request_val {
 	guint32		position;
+	int		is_input;
 	char		*pidp11_control_name;
 	int		pidp11_control_radix;
 	int		pidp11_control_bits;
@@ -244,8 +248,7 @@ struct control_request_val {
 };
 
 static wmem_map_t *pidp11_request_hash = NULL;
-static wmem_map_t *input_control_request_hash = NULL;
-static wmem_map_t *output_control_request_hash = NULL;
+static wmem_map_t *control_request_hash = NULL;
 
 /* Global sample preference ("controls" display of numbers) */
 static gboolean pref_hex = FALSE;
@@ -287,13 +290,10 @@ pidp11_equal(gconstpointer v, gconstpointer w)
 	const struct pidp11_request_key *v1 = (const struct pidp11_request_key *)v;
 	const struct pidp11_request_key *v2 = (const struct pidp11_request_key *)w;
 
-	DEBUG("pidp11_equal %08x vs %08x, %08x vs %08x", v1->conversation, v2->conversation, v1->sequence_number, v2->sequence_number);
 	if((v1->conversation == v2->conversation) && (v1->sequence_number == v2->sequence_number)) {
-		DEBUG("pidp11_equal yes");
 		return 1;
 	}
 
-	DEBUG("pidp11_equal no");
 	return 0;
 }
 
@@ -304,7 +304,6 @@ pidp11_hash(gconstpointer v)
 	guint val;
 
 	val = key->conversation + key->sequence_number;
-	DEBUG("pidp11_hash %08x", val);
 
 	return val;
 }
@@ -315,13 +314,10 @@ control_equal(gconstpointer v, gconstpointer w)
 	const struct control_request_key *v1 = (const struct control_request_key *)v;
 	const struct control_request_key *v2 = (const struct control_request_key *)w;
 
-	DEBUG("control_equal %08x vs %08x", v1->position, v2->position);
 	if(v1->position == v2->position) {
-		DEBUG("control_equal yes");
 		return 1;
 	}
 
-	DEBUG("control_equal no");
 	return 0;
 }
 
@@ -332,14 +328,72 @@ control_hash(gconstpointer v)
 	guint val;
 
 	val = key->position;
-	DEBUG("control_hash %08x", val);
 
 	return val;
+}
+
+// Unfortunately, inputs and outputs are interleaved, so we have to do a linear search for the
+// correct element.
+static struct control_request_val *
+find_label(
+		int		is_input,
+		int		number
+		)
+{
+	int		i;
+	int		in_count;
+	int		out_count;
+
+	struct control_request_key control_request_key;
+	struct control_request_val *control_request_val;
+
+	DEBUG("finding %s %d", is_input ? "input" : "output", number);
+	i = 0;
+	in_count = -1;
+	out_count = -1;
+	while(1) {
+		// Find the next entry.
+		control_request_key.position = i;
+		control_request_val = (struct control_request_val *)wmem_map_lookup(control_request_hash, &control_request_key);
+
+		// Controls are numbered consecutively from zero, so as soon as we find a missing
+		// slot, we can give up searching.
+		if(!control_request_val) {
+			// Not found.
+			DEBUG("not found");
+			return NULL;
+		}
+
+		// Update the appropriate tally.
+		if(control_request_val->is_input) {
+			in_count++;
+		} else {
+			out_count++;
+		}
+
+		// Inputs and outputs are interleaved, so we have to keep our own counters.
+		if(is_input) {
+			if(number == in_count) {
+				// Found the correct input.
+				DEBUG("found input %d at %d", number, i);
+				return control_request_val;
+			}
+		} else {
+			if(number == out_count) {
+				// Found the correct output.
+				DEBUG("found output %d at %d", number, i);
+				return control_request_val;
+			}
+		}
+
+		i++;
+	}
 }
 
 static void
 insert_one_control(
 		int		is_input,
+		int		number,
 		char		*name,
 		int		radix,
 		int		bits,
@@ -352,56 +406,35 @@ insert_one_control(
 
 	char *p;
 	int name_len = strlen(name) + 1; // Include space for the null.
-	int position;
-	wmem_map_t *control_request_hash;
-
-	DEBUG("insert_one_control begins");
 
 	p = (char *)wmem_alloc(wmem_epan_scope(), name_len);
 	strncpy(p, name, name_len);
 
-	if(is_input) {
-		position = input_position++;
-		control_request_hash = input_control_request_hash;
-	} else {
-		position = output_position++;
-		control_request_hash = output_control_request_hash;
-	}
-	control_request_key.position = position;
-	DEBUG("insert_one_control ready to lookup");
+	control_request_key.position = number;
 	control_request_val = (struct control_request_val *) wmem_map_lookup(control_request_hash, &control_request_key);
-	DEBUG("insert_one_control did lookup");
 
 	if(control_request_val) {
 		// Control already exists, but might not match, so free it before inserting a new one.
 		if(control_request_val->pidp11_control_name) {
-			DEBUG("insert_one_control ready to free");
 			wmem_free(wmem_epan_scope(), control_request_val->pidp11_control_name);
-			DEBUG("insert_one_control did free");
 		}
-		DEBUG("insert_one_control ready to remove");
 		wmem_map_remove(control_request_hash, &control_request_key);
-		DEBUG("insert_one_control did remove");
 	}
 
-	DEBUG("inserting control %d, %s", position, p);
-	DEBUG("insert_one_control ready for new key");
+	DEBUG("%s control %d, %s", is_input ? "input" : "output", control_request_key.position, name);
+
 	new_control_request_key = wmem_new(wmem_epan_scope(), struct control_request_key);
-	DEBUG("insert_one_control did new key");
 	*new_control_request_key = control_request_key;
 
-	DEBUG("insert_one_control ready for new control");
 	control_request_val = wmem_new(wmem_epan_scope(), struct control_request_val);
-	DEBUG("insert_one_control did new control");
-	control_request_val->position			= position;
+	control_request_val->position			= number;
+	control_request_val->is_input			= is_input;
 	control_request_val->pidp11_control_name	= p;
 	control_request_val->pidp11_control_radix	= radix;
 	control_request_val->pidp11_control_bits	= bits;
 	control_request_val->pidp11_control_bytes	= bytes;
 
-	DEBUG("insert_one_control ready to insert");
 	wmem_map_insert(control_request_hash, new_control_request_key, control_request_val);
-	DEBUG("insert_one_control did insert");
 }
 
 // In many cases, the capture will not include the RPC_BLINKENLIGHT_API_GETCONTROLINFO messages.
@@ -417,39 +450,36 @@ insert_one_control(
 static void
 fake_controls(void)
 {
-	input_position = 0;
-	output_position = 0;
+	insert_one_control(TRUE,  0, "(SR)",			8, 22, 3);
+	insert_one_control(TRUE,  1, "(LAMPTEST)",		8, 1, 1);
+	insert_one_control(TRUE,  2, "(LOAD_ADRS)",		8, 1, 1);
+	insert_one_control(TRUE,  3, "(EXAM)",			8, 1, 1);
+	insert_one_control(TRUE,  4, "(DEPOSIT)",		8, 1, 1);
+	insert_one_control(TRUE,  5, "(CONT)",			8, 1, 1);
+	insert_one_control(TRUE,  6, "(HALT)",			8, 1, 1);
+	insert_one_control(TRUE,  7, "(S_BUS_CYCLE)",		8, 1, 1);
+	insert_one_control(TRUE,  8, "(START)",			8, 1, 1);
+	insert_one_control(TRUE,  9, "(ADDR_SELECT)",		8, 3, 1);
+	insert_one_control(TRUE, 10, "(DATA_SELECT)",		8, 2, 1);
+	insert_one_control(TRUE, 11, "(PANEL_LOCK)",		8, 1, 1);
+	insert_one_control(TRUE, 12, "(POWER)",			8, 1, 1);
 
-	insert_one_control(TRUE, "(SR)",			8, 22, 3);
-	insert_one_control(TRUE, "(LAMPTEST)",			8, 1, 1);
-	insert_one_control(TRUE, "(LOAD_ADRS)",			8, 1, 1);
-	insert_one_control(TRUE, "(EXAM)",			8, 1, 1);
-	insert_one_control(TRUE, "(DEPOSIT)",			8, 1, 1);
-	insert_one_control(TRUE, "(CONT)",			8, 1, 1);
-	insert_one_control(TRUE, "(HALT)",			8, 1, 1);
-	insert_one_control(TRUE, "(S_BUS_CYCLE)",		8, 1, 1);
-	insert_one_control(TRUE, "(START)",			8, 1, 1);
-	insert_one_control(TRUE, "(ADDR_SELECT)",		8, 3, 1);
-	insert_one_control(TRUE, "(DATA_SELECT)",		8, 2, 1);
-	insert_one_control(TRUE, "(PANEL_LOCK)",		8, 1, 1);
-	insert_one_control(TRUE, "(POWER)",			8, 1, 1);
-
-	insert_one_control(FALSE, "(ADDRESS)",			8, 22, 3);
-	insert_one_control(FALSE, "(DATA)",			8, 16, 2);
-	insert_one_control(FALSE, "(PARITY_HIGH)",		8, 1, 1);
-	insert_one_control(FALSE, "(PARITY_LOW)",		8, 1, 1);
-	insert_one_control(FALSE, "(PAR_ERR)",			8, 1, 1);
-	insert_one_control(FALSE, "(ADRS_ERR)",			8, 1, 1);
-	insert_one_control(FALSE, "(RUN)",			8, 1, 1);
-	insert_one_control(FALSE, "(PAUSE)",			8, 1, 1);
-	insert_one_control(FALSE, "(MASTER)",			8, 1, 1);
-	insert_one_control(FALSE, "(MMR0_MODE)",		8, 3, 1);
-	insert_one_control(FALSE, "(DATA_SPACE)",		8, 1, 1);
-	insert_one_control(FALSE, "(ADDRESSING_16)",		8, 1, 1);
-	insert_one_control(FALSE, "(ADDRESSING_18)",		8, 1, 1);
-	insert_one_control(FALSE, "(ADDRESSING_22)",		8, 1, 1);
-	insert_one_control(FALSE, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
-	insert_one_control(FALSE, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
+	insert_one_control(FALSE, 13, "(ADDRESS)",		8, 22, 3);
+	insert_one_control(FALSE, 14, "(DATA)",			8, 16, 2);
+	insert_one_control(FALSE, 15, "(PARITY_HIGH)",		8, 1, 1);
+	insert_one_control(FALSE, 16, "(PARITY_LOW)",		8, 1, 1);
+	insert_one_control(FALSE, 17, "(PAR_ERR)",		8, 1, 1);
+	insert_one_control(FALSE, 18, "(ADRS_ERR)",		8, 1, 1);
+	insert_one_control(FALSE, 19, "(RUN)",			8, 1, 1);
+	insert_one_control(FALSE, 20, "(PAUSE)",		8, 1, 1);
+	insert_one_control(FALSE, 21, "(MASTER)",		8, 1, 1);
+	insert_one_control(FALSE, 22, "(MMR0_MODE)",		8, 3, 1);
+	insert_one_control(FALSE, 23, "(DATA_SPACE)",		8, 1, 1);
+	insert_one_control(FALSE, 24, "(ADDRESSING_16)",	8, 1, 1);
+	insert_one_control(FALSE, 25, "(ADDRESSING_18)",	8, 1, 1);
+	insert_one_control(FALSE, 26, "(ADDRESSING_22)",	8, 1, 1);
+	insert_one_control(FALSE, 27, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
+	insert_one_control(FALSE, 28, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
 }
 
 /* Code to actually dissect the packets */
@@ -482,7 +512,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 	uint32_t	*value_bytes_val;
 	uint32_t	value;
 
-	DEBUG("dissect_pidp11");
+	DEBUG("begin");
 
 	// Check that the packet is long enough for it to belong to us.  The
 	// shortest has MIN_LEN bytes of data after the UDP header.
@@ -572,7 +602,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			conversation_request_val->pidp11_sequence_number	= pidp11_sequence_number;
 			conversation_request_val->pidp11_direction		= pidp11_direction;
 			conversation_request_val->pidp11_rpc_version		= pidp11_rpc_version;
-			conversation_request_val->pidp11_program_number	= pidp11_program_number;
+			conversation_request_val->pidp11_program_number		= pidp11_program_number;
 			conversation_request_val->pidp11_blinken_version	= pidp11_blinken_version;
 			conversation_request_val->pidp11_blinken_function	= pidp11_blinken_function;
 
@@ -603,9 +633,9 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			g_snprintf(buf, BUF_LEN, "Server (not matched)");
 		}
 
-		DEBUG("dissect_pidp11 adding tree");
+		DEBUG("adding server tree");
 		ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
-		DEBUG("dissect_pidp11 added tree");
+		DEBUG("added server tree");
 
 		pidp11_tree = proto_item_add_subtree(ti, ett_top_level);
 
@@ -655,17 +685,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
 				proto_tree_add_uint(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, 0, 0, conversation_request_val->pidp11_control_index);
-				if(conversation_request_val->pidp11_control_index == 0) {
-					// It looks like the controls are probed in order, starting from zero, so we can
-					// use that to reset the position indices.
-					input_position = 0;
-					output_position = 0;
-					DEBUG("clearing positions to zero");
-				}
 
 				len = SU + (((tvb_get_ntohl(tvb, offset) + (SU - 1)) / SU) * SU);
 				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_name, tvb, offset, SU, ENC_UTF_8 | ENC_BIG_ENDIAN);
-				char *name = (char *)tvb_get_string_enc(wmem_epan_scope(), tvb, offset + SU, tvb_get_ntohl(tvb, offset), ENC_UTF_8|ENC_NA);
+				char *name = (char *)tvb_get_string_enc(wmem_epan_scope(), tvb, offset + SU, tvb_get_ntohl(tvb, offset), ENC_UTF_8 | ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
@@ -692,19 +715,8 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				int bytes = tvb_get_ntohl(tvb, offset);
 
 				// We have to add each control to a list, so we can find it again, when we interpret the
-				// control values.  If the capture doesn't include these messages, then we won't be able
-				// to put names to the control values.  We might pre-populate the list with the expected
-				// names and show them with ? to indicate uncertainty...
-				int position;
-				wmem_map_t *control_request_hash;
-				if(is_input) {
-					position = input_position++;
-					control_request_hash = input_control_request_hash;
-				} else {
-					position = output_position++;
-					control_request_hash = output_control_request_hash;
-				}
-				control_request_key.position = position;
+				// control values.
+				control_request_key.position = conversation_request_val->pidp11_control_index;
 				control_request_val = (struct control_request_val *) wmem_map_lookup(control_request_hash, &control_request_key);
 
 				if(control_request_val) {
@@ -715,12 +727,13 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					wmem_map_remove(control_request_hash, &control_request_key);
 				}
 
-				DEBUG("inserting control %d, %s", position, name);
+				DEBUG("packet=%d inserting %s control %d, %s", pinfo->num, is_input ? "input" : "output", control_request_key.position, name);
 				new_control_request_key = wmem_new(wmem_epan_scope(), struct control_request_key);
 				*new_control_request_key = control_request_key;
 
 				control_request_val = wmem_new(wmem_epan_scope(), struct control_request_val);
-				control_request_val->position			= position;
+				control_request_val->position			= control_request_key.position;
+				control_request_val->is_input			= is_input;
 				control_request_val->pidp11_control_name	= name;
 				control_request_val->pidp11_control_radix	= radix;
 				control_request_val->pidp11_control_bits	= bits;
@@ -747,8 +760,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 						if(i >= NUM_SLOTS) {
 							goto QUIT_INPUT;
 						}
-						control_request_key.position = i;
-						control_request_val = (struct control_request_val *) wmem_map_lookup(input_control_request_hash, &control_request_key);
+						control_request_val = find_label(TRUE, i);
 						if(control_request_val) {
 							value = 0;
 							k2 = k;
@@ -777,9 +789,9 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		}
 	} else {
 		// Client (SIMH)
-		DEBUG("dissect_pidp11 adding tree");
+		DEBUG("adding client tree");
 		ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
-		DEBUG("dissect_pidp11 added tree");
+		DEBUG("added client tree");
 
 		pidp11_tree = proto_item_add_subtree(ti, ett_top_level);
 
@@ -846,8 +858,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					if(i >= NUM_SLOTS) {
 						goto QUIT_OUTPUT;
 					}
-					control_request_key.position = i;
-					control_request_val = (struct control_request_val *) wmem_map_lookup(output_control_request_hash, &control_request_key);
+					control_request_val = find_label(FALSE, i);
 					if(control_request_val) {
 						value = 0;
 						k2 = k;
@@ -949,7 +960,7 @@ proto_register_pidp11(void)
 		&ett_top_level,
 	};
 
-	DEBUG("proto_register_pidp11");
+	DEBUG("start");
 
 	/* Register the protocol name and description */
 	proto_pidp11 = proto_register_protocol("PiDP-11", "PiDP-11", "pidp-11");
@@ -983,8 +994,7 @@ proto_register_pidp11(void)
 	prefs_register_uint_preference(pidp11_module, "udp.port", "pidp11 UDP Port", " pidp11 UDP port if other than the default", 10, &udp_port_pref);
 
 	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), pidp11_hash, pidp11_equal);
-	input_control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
-	output_control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
+	control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
 
 	// In case we don't learn these from the packet stream, start with some likely defaults.
 	fake_controls();
@@ -994,7 +1004,7 @@ proto_register_pidp11(void)
 static gboolean
 test_pidp11(packet_info *pinfo _U_, tvbuff_t *tvb, int offset _U_, void *data _U_)
 {
-	DEBUG("test_pidp11");
+	DEBUG("start");
 	tvb_reported_length(tvb);
 
 	// Check that the packet is long enough for it to belong to us.  The
@@ -1089,14 +1099,14 @@ test_pidp11(packet_info *pinfo _U_, tvbuff_t *tvb, int offset _U_, void *data _U
 static guint
 get_pidp11_len(packet_info *pinfo _U_, tvbuff_t *tvb, int offset, void *data _U_)
 {
-	DEBUG("get_pidp11_len");
+	DEBUG("start");
 	return (guint) tvb_get_ntohs(tvb, offset + 3);
 }
 
 static gboolean
 dissect_pidp11_heur_udp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
-	DEBUG("dissect_pidp11_heur_udp");
+	DEBUG("start");
 	return (udp_dissect_pdus(tvb, pinfo, tree, 5, test_pidp11, get_pidp11_len, dissect_pidp11, data) != 0);
 }
 
@@ -1122,7 +1132,7 @@ proto_reg_handoff_pidp11(void)
 	static dissector_handle_t pidp11_handle;
 	static int current_port;
 
-	DEBUG("proto_reg_handoff_pidp11");
+	DEBUG("start");
 	if (!initialized) {
 		/* Use create_dissector_handle() to indicate that
 		 * dissect_pidp11() returns the number of bytes it dissected (or 0
