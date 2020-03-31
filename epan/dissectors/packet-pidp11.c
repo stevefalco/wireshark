@@ -21,12 +21,18 @@
 
 #include <epan/dissectors/packet-udp.h>
 
+// When enabling debug, be sure to change the LOG_FILE_PATH to where you want
+// the log file to land.
+#define ENABLE_DEBUG
+#define LOG_FILE_PATH	"/home/sfalco/log.wire"
+
+// Minimum packet length (UDP data portion).
 #define MIN_LEN		28
 
+// Buffer size.
 #define BUF_LEN		128
 
-#define ENABLE_DEBUG
-
+// RPC function numbers.
 #define RPC_BLINKENLIGHT_API_GETINFO			1
 #define RPC_BLINKENLIGHT_API_GETPANELINFO		2
 #define RPC_BLINKENLIGHT_API_GETCONTROLINFO		3
@@ -37,6 +43,7 @@
 #define RPC_TEST_DATA_TO_SERVER				1000
 #define RPC_TEST_DATA_FROM_SERVER			1001
 
+// Functions are in three groups.  Here are some convenience macros.
 #define PRIMARY_MIN	RPC_BLINKENLIGHT_API_GETINFO
 #define PRIMARY_MAX	RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES
 #define PRIMARY(a)	(((a) >= PRIMARY_MIN) && ((a) <= PRIMARY_MAX))
@@ -49,10 +56,82 @@
 #define TERTIARY_MAX	RPC_TEST_DATA_FROM_SERVER
 #define TERTIARY(a)	(((a) >= TERTIARY_MIN) && ((a) <= TERTIARY_MAX))
 
+// All fields are 32-bits, even though most only use the lowest byte.  The RPC
+// messages could be made much more space-efficient...
 #define SU		(sizeof(uint32_t))
 
+// Bit mask.
 #define MASK(n)		((1 << (n)) - 1)
 
+// Logging mechanism.
+#ifdef ENABLE_DEBUG
+#define DEBUG(fmt, ... ) logit(__func__, __LINE__, fmt, ##__VA_ARGS__ )
+
+static void logit(
+		const char *func,
+		int line,
+		const char *format,
+		...
+		)
+{
+	va_list		ap;
+	static FILE	*logfp = 0;
+
+	if(logfp == 0) {
+		// Change this path to suit yourself.
+		logfp = fopen(LOG_FILE_PATH, "w");
+		fprintf(logfp, "opened log\n");
+		fflush(logfp);
+	}
+
+	if(logfp) {
+		fprintf(logfp, "%s %d:", func, line);
+		va_start(ap, format);
+		vfprintf(logfp, format, ap);
+		va_end(ap);
+		fprintf(logfp, "\n");
+		fflush(logfp);
+	}
+}
+#else
+#define DEBUG(fmt, ...)
+#endif
+
+// For matching message requests and replies.
+struct pidp11_request_key {
+	guint32		conversation;
+	guint32		sequence_number;
+};
+
+struct pidp11_request_val {
+	guint		req_num;
+	guint		rep_num;
+
+	uint32_t	pidp11_sequence_number;
+	int		pidp11_direction;
+	int		pidp11_rpc_version;
+	int		pidp11_program_number;
+	int		pidp11_blinken_version;
+	int		pidp11_blinken_function;
+
+	int		pidp11_control_index;
+};
+
+// For looking up control parameters.
+struct control_request_key {
+	guint32		position;
+};
+
+struct control_request_val {
+	guint32		position;
+	int		is_input;
+	char		*pidp11_control_name;
+	int		pidp11_control_radix;
+	int		pidp11_control_bits;
+	int		pidp11_control_bytes;
+};
+
+// Map RPC function numbers to names.
 static const value_string blinken_function[] = {
 	{ RPC_BLINKENLIGHT_API_GETINFO,			"RPC_BLINKENLIGHT_API_GETINFO"},
 	{ RPC_BLINKENLIGHT_API_GETPANELINFO,		"RPC_BLINKENLIGHT_API_GETPANELINFO"},
@@ -91,91 +170,60 @@ static const value_string component_radix[] = {
 	{ 0, NULL }
 };
 
-#ifdef ENABLE_DEBUG
-#define DEBUG(fmt, ... ) logit(__func__, __LINE__, fmt, ##__VA_ARGS__ )
-
-static void logit(
-		const char *func,
-		int line,
-		const char *format,
-	       	...
-		)
-{
-	va_list		ap;
-	static FILE	*logfp = 0;
-
-	if(logfp == 0) {
-		logfp = fopen("/home/sfalco/log.wire", "w");
-		fprintf(logfp, "opened log\n");
-		fflush(logfp);
-	}
-
-	if(logfp) {
-		fprintf(logfp, "%s %d:", func, line);
-		va_start(ap, format);
-		vfprintf(logfp, format, ap);
-		va_end(ap);
-		fprintf(logfp, "\n");
-		fflush(logfp);
-	}
-}
-#else
-#define DEBUG(fmt, ...)
-#endif
-
-/* Prototypes */
+// Prototypes - these are our primary interface to the main wireshark system.
 void proto_reg_handoff_pidp11(void);
 void proto_register_pidp11(void);
 
 // Initialize the protocol.
-static int		proto_pidp11 = -1;
+static int		proto_pidp11				= -1;
 
 // Initialize registered fields.
-static int		hf_pidp11_sequence_number = -1;
-static int		hf_pidp11_direction = -1;
-static int		hf_pidp11_rpc_version = -1;
-static int		hf_pidp11_program_number = -1;
-static int		hf_pidp11_blinken_version = -1;
-static int		hf_pidp11_blinken_function = -1;
-static int		hf_pidp11_error_code = -1;
-static int		hf_pidp11_getinfo_info = -1;
-static int		hf_pidp11_getpanelinfo_index = -1;
-static int		hf_pidp11_getpanelinfo_name = -1;
-static int		hf_pidp11_getpanelinfo_in_count = -1;
-static int		hf_pidp11_getpanelinfo_out_count = -1;
-static int		hf_pidp11_getpanelinfo_in_bytes = -1;
-static int		hf_pidp11_getpanelinfo_out_bytes = -1;
-static int		hf_pidp11_getcontrolinfo_index = -1;
-static int		hf_pidp11_getcontrolinfo_name = -1;
-static int		hf_pidp11_getcontrolinfo_input = -1;
-static int		hf_pidp11_getcontrolinfo_type = -1;
-static int		hf_pidp11_getcontrolinfo_radix = -1;
-static int		hf_pidp11_getcontrolinfo_bits = -1;
-static int		hf_pidp11_getcontrolinfo_bytes = -1;
-static int		hf_pidp11_getcontrolvalue_bytes = -1;
-static int		hf_pidp11_getcontrolvalue_0 = -1;
-static int		hf_pidp11_getcontrolvalue_1 = -1;
-static int		hf_pidp11_getcontrolvalue_2 = -1;
-static int		hf_pidp11_getcontrolvalue_3 = -1;
-static int		hf_pidp11_getcontrolvalue_4 = -1;
-static int		hf_pidp11_getcontrolvalue_5 = -1;
-static int		hf_pidp11_getcontrolvalue_6 = -1;
-static int		hf_pidp11_getcontrolvalue_7 = -1;
-static int		hf_pidp11_getcontrolvalue_8 = -1;
-static int		hf_pidp11_getcontrolvalue_9 = -1;
-static int		hf_pidp11_getcontrolvalue_10 = -1;
-static int		hf_pidp11_getcontrolvalue_11 = -1;
-static int		hf_pidp11_getcontrolvalue_12 = -1;
-static int		hf_pidp11_getcontrolvalue_13 = -1;
-static int		hf_pidp11_getcontrolvalue_14 = -1;
-static int		hf_pidp11_getcontrolvalue_15 = -1;
-static int		hf_pidp11_getcontrolvalue_16 = -1;
-static int		hf_pidp11_getcontrolvalue_17 = -1;
-static int		hf_pidp11_getcontrolvalue_18 = -1;
-static int		hf_pidp11_getcontrolvalue_19 = -1;
-static int		hf_pidp11_getcontrolvalue_20 = -1;
-static int		hf_pidp11_getcontrolvalue_21 = -1;
+static int		hf_pidp11_sequence_number		= -1;
+static int		hf_pidp11_direction			= -1;
+static int		hf_pidp11_rpc_version			= -1;
+static int		hf_pidp11_program_number		= -1;
+static int		hf_pidp11_blinken_version		= -1;
+static int		hf_pidp11_blinken_function		= -1;
+static int		hf_pidp11_error_code			= -1;
+static int		hf_pidp11_getinfo_info			= -1;
+static int		hf_pidp11_getpanelinfo_index		= -1;
+static int		hf_pidp11_getpanelinfo_name		= -1;
+static int		hf_pidp11_getpanelinfo_in_count		= -1;
+static int		hf_pidp11_getpanelinfo_out_count	= -1;
+static int		hf_pidp11_getpanelinfo_in_bytes		= -1;
+static int		hf_pidp11_getpanelinfo_out_bytes	= -1;
+static int		hf_pidp11_getcontrolinfo_index		= -1;
+static int		hf_pidp11_getcontrolinfo_name		= -1;
+static int		hf_pidp11_getcontrolinfo_input		= -1;
+static int		hf_pidp11_getcontrolinfo_type		= -1;
+static int		hf_pidp11_getcontrolinfo_radix		= -1;
+static int		hf_pidp11_getcontrolinfo_bits		= -1;
+static int		hf_pidp11_getcontrolinfo_bytes		= -1;
+static int		hf_pidp11_getcontrolvalue_bytes		= -1;
+static int		hf_pidp11_getcontrolvalue_0		= -1;
+static int		hf_pidp11_getcontrolvalue_1		= -1;
+static int		hf_pidp11_getcontrolvalue_2		= -1;
+static int		hf_pidp11_getcontrolvalue_3		= -1;
+static int		hf_pidp11_getcontrolvalue_4		= -1;
+static int		hf_pidp11_getcontrolvalue_5		= -1;
+static int		hf_pidp11_getcontrolvalue_6		= -1;
+static int		hf_pidp11_getcontrolvalue_7		= -1;
+static int		hf_pidp11_getcontrolvalue_8		= -1;
+static int		hf_pidp11_getcontrolvalue_9		= -1;
+static int		hf_pidp11_getcontrolvalue_10		= -1;
+static int		hf_pidp11_getcontrolvalue_11		= -1;
+static int		hf_pidp11_getcontrolvalue_12		= -1;
+static int		hf_pidp11_getcontrolvalue_13		= -1;
+static int		hf_pidp11_getcontrolvalue_14		= -1;
+static int		hf_pidp11_getcontrolvalue_15		= -1;
+static int		hf_pidp11_getcontrolvalue_16		= -1;
+static int		hf_pidp11_getcontrolvalue_17		= -1;
+static int		hf_pidp11_getcontrolvalue_18		= -1;
+static int		hf_pidp11_getcontrolvalue_19		= -1;
+static int		hf_pidp11_getcontrolvalue_20		= -1;
+static int		hf_pidp11_getcontrolvalue_21		= -1;
 
+// Provide a way to index into these fields.
 static int		*slots[] = {
 	&hf_pidp11_getcontrolvalue_0,
 	&hf_pidp11_getcontrolvalue_1,
@@ -203,49 +251,13 @@ static int		*slots[] = {
 #define NUM_SLOTS	((int)(sizeof(slots) / sizeof(int *)))
 
 // Values of the fields.
-static uint32_t		pidp11_sequence_number = -1;
-static int		pidp11_direction = -1;
-static int		pidp11_rpc_version = -1;
-static int		pidp11_program_number = -1;
-static int		pidp11_blinken_version = -1;
-static int		pidp11_blinken_function = -1;
-static int		pidp11_control_index = -1;
-
-// Expected controls.
-static int		input_count = 13;
-static int		output_count = 16;
-
-struct pidp11_request_key {
-	guint32		conversation;
-	guint32		sequence_number;
-};
-
-struct pidp11_request_val {
-	guint		req_num;
-	guint		rep_num;
-
-	uint32_t	pidp11_sequence_number;
-	int		pidp11_direction;
-	int		pidp11_rpc_version;
-	int		pidp11_program_number;
-	int		pidp11_blinken_version;
-	int		pidp11_blinken_function;
-
-	int		pidp11_control_index;
-};
-
-struct control_request_key {
-	guint32		position;
-};
-
-struct control_request_val {
-	guint32		position;
-	int		is_input;
-	char		*pidp11_control_name;
-	int		pidp11_control_radix;
-	int		pidp11_control_bits;
-	int		pidp11_control_bytes;
-};
+static uint32_t		pidp11_sequence_number			= -1;
+static int		pidp11_direction			= -1;
+static int		pidp11_rpc_version			= -1;
+static int		pidp11_program_number			= -1;
+static int		pidp11_blinken_version			= -1;
+static int		pidp11_blinken_function			= -1;
+static int		pidp11_control_index			= -1;
 
 static wmem_map_t *pidp11_request_hash = NULL;
 static wmem_map_t *control_request_hash = NULL;
@@ -669,12 +681,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				offset += len;
 				len = SU;
 				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_in_count, tvb, offset, len, ENC_BIG_ENDIAN);
-				input_count = tvb_get_ntohl(tvb, offset);
 
 				offset += len;
 				len = SU;
 				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_count, tvb, offset, len, ENC_BIG_ENDIAN);
-				output_count = tvb_get_ntohl(tvb, offset);
 
 				offset += len;
 				len = SU;
@@ -756,7 +766,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					}
 
 					k = 0;
-					for(i = 0; i < input_count; i++) {
+					for(i = 0; TRUE; i++) {
 						if(i >= NUM_SLOTS) {
 							goto QUIT_INPUT;
 						}
@@ -854,7 +864,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				}
 
 				k = 0;
-				for(i = 0; i < output_count; i++) {
+				for(i = 0; TRUE; i++) {
 					if(i >= NUM_SLOTS) {
 						goto QUIT_OUTPUT;
 					}
