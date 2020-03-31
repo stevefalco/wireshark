@@ -43,6 +43,21 @@
 #define RPC_TEST_DATA_TO_SERVER				1000
 #define RPC_TEST_DATA_FROM_SERVER			1001
 
+#define RPC_PARAM_CLASS_BUS				1
+#define RPC_PARAM_CLASS_PANEL				2
+#define RPC_PARAM_CLASS_CONTROL				3
+
+#define RPC_PARAM_HANDLE_PANEL_BLINKENBOARDS_STATE		1
+#define RPC_PARAM_VALUE_PANEL_BLINKENBOARDS_STATE_OFF		0
+#define RPC_PARAM_VALUE_PANEL_BLINKENBOARDS_STATE_TRISTATE	1
+#define RPC_PARAM_VALUE_PANEL_BLINKENBOARDS_STATE_ACTIVE	2
+
+#define RPC_PARAM_HANDLE_PANEL_MODE			2
+#define RPC_PARAM_VALUE_PANEL_MODE_NORMAL		0
+#define RPC_PARAM_VALUE_PANEL_MODE_LAMPTEST		1
+#define RPC_PARAM_VALUE_PANEL_MODE_ALLTEST		2
+#define RPC_PARAM_VALUE_PANEL_MODE_POWERLESS		3
+
 // Functions are in three groups.  Here are some convenience macros.
 #define PRIMARY_MIN	RPC_BLINKENLIGHT_API_GETINFO
 #define PRIMARY_MAX	RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES
@@ -133,40 +148,76 @@ struct control_request_val {
 
 // Map RPC function numbers to names.
 static const value_string blinken_function[] = {
-	{ RPC_BLINKENLIGHT_API_GETINFO,			"RPC_BLINKENLIGHT_API_GETINFO"},
-	{ RPC_BLINKENLIGHT_API_GETPANELINFO,		"RPC_BLINKENLIGHT_API_GETPANELINFO"},
-	{ RPC_BLINKENLIGHT_API_GETCONTROLINFO,		"RPC_BLINKENLIGHT_API_GETCONTROLINFO"},
-	{ RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES,	"RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES"},
-	{ RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES,	"RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES"},
-	{ RPC_PARAM_GET,				"RPC_PARAM_GET"},
-	{ RPC_PARAM_SET,				"RPC_PARAM_SET"},
-	{ RPC_TEST_DATA_TO_SERVER,			"RPC_TEST_DATA_TO_SERVER"},
-	{ RPC_TEST_DATA_FROM_SERVER,			"RPC_TEST_DATA_FROM_SERVER"},
+	{ RPC_BLINKENLIGHT_API_GETINFO,			"RPC_BLINKENLIGHT_API_GETINFO" },
+	{ RPC_BLINKENLIGHT_API_GETPANELINFO,		"RPC_BLINKENLIGHT_API_GETPANELINFO" },
+	{ RPC_BLINKENLIGHT_API_GETCONTROLINFO,		"RPC_BLINKENLIGHT_API_GETCONTROLINFO" },
+	{ RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES,	"RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES" },
+	{ RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES,	"RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES" },
+	{ RPC_PARAM_GET,				"RPC_PARAM_GET" },
+	{ RPC_PARAM_SET,				"RPC_PARAM_SET" },
+	{ RPC_TEST_DATA_TO_SERVER,			"RPC_TEST_DATA_TO_SERVER" },
+	{ RPC_TEST_DATA_FROM_SERVER,			"RPC_TEST_DATA_FROM_SERVER" },
 	{ 0,	NULL }
 };
 
 static const value_string RPC_direction[] = {
-	{ 0, "Request from SIMH to Panel"},
-	{ 1, "Reply from Panel to SIMH"},
+	{ 0, "Request from SIMH to Panel" },
+	{ 1, "Reply from Panel to SIMH" },
 	{ 0, NULL }
 };
 
 static const value_string input_output[] = {
-	{ 0, "Output"},
-	{ 1, "Input"},
+	{ 0, "Output" },
+	{ 1, "Input" },
 	{ 0, NULL }
 };
 
 static const value_string component_type[] = {
-	{ 1, "Switch"},
-	{ 2, "LED"},
+	{ 1, "Switch" },
+	{ 2, "LED" },
 	{ 0, NULL }
 };
 
 static const value_string component_radix[] = {
-	{ 8, "Octal"},
-	{ 10, "Decimal"},
-	{ 16, "Hexadecimal"},
+	{ 8, "Octal" },
+	{ 10, "Decimal" },
+	{ 16, "Hexadecimal" },
+	{ 0, NULL }
+};
+
+static const value_string error_code[] = {
+	{ 0, "RPC_ERR_OK" },
+	{ 1, "RPC_ERR_PARAM_ILL_CLASS" },
+	{ 2, "RPC_ERR_PARAM_ILL_OBJECT" },
+	{ 3, "RPC_ERR_PARAM_ILL_PARAM" },
+	{ 0, NULL }
+};
+
+static const value_string param_class[] = {
+	{ 1, "RPC_PARAM_CLASS_BUS" },
+	{ 2, "RPC_PARAM_CLASS_PANEL" },
+	{ 3, "RPC_PARAM_CLASS_CONTROL" },
+	{ 0, NULL }
+};
+
+static const value_string param_handle[] = {
+	{ 1, "RPC_PARAM_HANDLE_PANEL_BLINKENBOARDS_STATE" },
+	{ 2, "RPC_PARAM_HANDLE_PANEL_MODE" },
+	{ 0, NULL }
+};
+
+static const value_string state_param_value[] = {
+	{ 0, "RPC_PARAM_VALUE_PANEL_BLINKENBOARDS_STATE_OFF" },
+	{ 1, "RPC_PARAM_VALUE_PANEL_BLINKENBOARDS_STATE_TRISTATE" },
+	{ 2, "RPC_PARAM_VALUE_PANEL_BLINKENBOARDS_STATE_ACTIVE" },
+	{ 0, NULL }
+};
+
+static const value_string mode_param_value[] = {
+	{ 0, "RPC_PARAM_VALUE_PANEL_MODE_NORMAL" },
+	{ 1, "RPC_PARAM_VALUE_PANEL_MODE_LAMPTEST" },
+	{ 2, "RPC_PARAM_VALUE_PANEL_MODE_ALLTEST" },
+	{ 3, "RPC_PARAM_VALUE_PANEL_MODE_POWERLESS" },
 	{ 0, NULL }
 };
 
@@ -222,6 +273,11 @@ static int		hf_pidp11_getcontrolvalue_18		= -1;
 static int		hf_pidp11_getcontrolvalue_19		= -1;
 static int		hf_pidp11_getcontrolvalue_20		= -1;
 static int		hf_pidp11_getcontrolvalue_21		= -1;
+static int		hf_pidp11_rpc_param_get_obj_class	= -1;
+static int		hf_pidp11_rpc_param_get_obj_handle	= -1;
+static int		hf_pidp11_rpc_param_get_param_handle	= -1;
+static int		hf_pidp11_rpc_param_get_state_value	= -1;
+static int		hf_pidp11_rpc_param_get_mode_value	= -1;
 
 // Provide a way to index into these fields.
 static int		*slots[] = {
@@ -661,7 +717,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 		proto_tree_add_uint(pidp11_tree, hf_pidp11_blinken_function, tvb, 0, 0, conversation_request_val->pidp11_blinken_function);
 
-		if(PRIMARY(conversation_request_val->pidp11_blinken_function)) {
+		if(PRIMARY(conversation_request_val->pidp11_blinken_function) || SECONDARY(conversation_request_val->pidp11_blinken_function)) {
 			offset = 0x18;
 			len = SU;
 			proto_tree_add_uint(pidp11_tree, hf_pidp11_error_code, tvb, offset, len, ENC_BIG_ENDIAN);
@@ -773,6 +829,26 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					}
 				}
 				QUIT_INPUT: ;
+			} else if(conversation_request_val->pidp11_blinken_function == RPC_PARAM_GET) {
+				len = SU;
+				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_class, tvb, offset, len, ENC_BIG_ENDIAN);
+
+				offset += len;
+				len = SU;
+				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+
+				offset += len;
+				len = SU;
+				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_param_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+				int handle = tvb_get_ntohl(tvb, offset);
+
+				offset += len;
+				len = SU;
+				if(handle == RPC_PARAM_HANDLE_PANEL_BLINKENBOARDS_STATE) {
+					ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_state_value, tvb, offset, len, ENC_BIG_ENDIAN);
+				} else if(handle == RPC_PARAM_HANDLE_PANEL_MODE) {
+					ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_mode_value, tvb, offset, len, ENC_BIG_ENDIAN);
+				}
 			}
 		}
 	} else {
@@ -874,6 +950,17 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
 			len = SU;
 			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+		} else if(pidp11_blinken_function == RPC_PARAM_GET) {
+			len = SU;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_class, tvb, offset, len, ENC_BIG_ENDIAN);
+
+			offset += len;
+			len = SU;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+
+			offset += len;
+			len = SU;
+			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_param_handle, tvb, offset, len, ENC_BIG_ENDIAN);
 		}
 	}
 
@@ -899,7 +986,7 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_program_number,		{ "Program Number",	"pidp11.prog_num",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_blinken_version,		{ "Blinken Version",	"pidp11.blink_vers",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_blinken_function,		{ "Blinken Function",	"pidp11.blink_func",	FT_UINT32,	BASE_NONE,	VALS(blinken_function), 0, NULL, HFILL } },
-		{ &hf_pidp11_error_code,		{ "Error Code",		"pidp11.error_code",	FT_UINT32,	BASE_HEX,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_error_code,		{ "Error Code",		"pidp11.error_code",	FT_UINT32,	BASE_NONE,	VALS(error_code), 0, NULL, HFILL } },
 		{ &hf_pidp11_getinfo_info,		{ "Info",		"pidp11.info",		FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_index,	{ "Panel Index",	"pidp11.panel_index",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_name,		{ "Panel Name",		"pidp11.panel_name",	FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
@@ -937,6 +1024,11 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_getcontrolvalue_19,	{ "Control 19",		"pidp11.control_19",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_20,	{ "Control 20",		"pidp11.control_20",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_21,	{ "Control 21",		"pidp11.control_21",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_rpc_param_get_obj_class,	{ "Object Class",	"pidp11.obj_class",	FT_UINT32,	BASE_NONE,	VALS(param_class), 0, NULL, HFILL } },
+		{ &hf_pidp11_rpc_param_get_obj_handle,	{ "Object Handle",	"pidp11.obj_handle",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
+		{ &hf_pidp11_rpc_param_get_param_handle,{ "Parameter Handle",	"pidp11.param_handle",	FT_UINT32,	BASE_NONE,	VALS(param_handle), 0, NULL, HFILL } },
+		{ &hf_pidp11_rpc_param_get_state_value,	{ "State Value",	"pidp11.state_value",	FT_UINT32,	BASE_NONE,	VALS(state_param_value), 0, NULL, HFILL } },
+		{ &hf_pidp11_rpc_param_get_mode_value,	{ "Mode Value",		"pidp11.mode_value",	FT_UINT32,	BASE_NONE,	VALS(mode_param_value), 0, NULL, HFILL } },
 	};
 
 	// Setup protocol subtree array.
