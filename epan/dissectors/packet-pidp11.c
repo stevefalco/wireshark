@@ -405,12 +405,6 @@ insert_one_control(
 	struct control_request_key *new_control_request_key;
 	struct control_request_val *control_request_val = NULL;
 
-	char *p;
-	int name_len = strlen(name) + 1; // Include space for the null.
-
-	p = (char *)wmem_alloc(wmem_epan_scope(), name_len);
-	strncpy(p, name, name_len);
-
 	control_request_key.position = number;
 	control_request_val = (struct control_request_val *) wmem_map_lookup(control_request_hash, &control_request_key);
 
@@ -430,12 +424,33 @@ insert_one_control(
 	control_request_val = wmem_new(wmem_epan_scope(), struct control_request_val);
 	control_request_val->position			= number;
 	control_request_val->is_input			= is_input;
-	control_request_val->pidp11_control_name	= p;
+	control_request_val->pidp11_control_name	= name;
 	control_request_val->pidp11_control_radix	= radix;
 	control_request_val->pidp11_control_bits	= bits;
 	control_request_val->pidp11_control_bytes	= bytes;
 
 	wmem_map_insert(control_request_hash, new_control_request_key, control_request_val);
+}
+
+static void
+allocate_and_insert_one_control(
+		int		is_input,
+		int		number,
+		char		*name,
+		int		radix,
+		int		bits,
+		int		bytes
+		)
+{
+	int name_len = strlen(name) + 1; // Include space for the null.
+	char *p = (char *)wmem_alloc(wmem_epan_scope(), name_len);
+
+	if(!p) {
+		return;
+	}
+	strncpy(p, name, name_len);
+
+	insert_one_control(is_input, number, p, radix, bits, bytes);
 }
 
 // In many cases, the capture will not include the RPC_BLINKENLIGHT_API_GETCONTROLINFO messages.
@@ -451,36 +466,36 @@ insert_one_control(
 static void
 fake_controls(void)
 {
-	insert_one_control(TRUE,  0, "(SR)",			8, 22, 3);
-	insert_one_control(TRUE,  1, "(LAMPTEST)",		8, 1, 1);
-	insert_one_control(TRUE,  2, "(LOAD_ADRS)",		8, 1, 1);
-	insert_one_control(TRUE,  3, "(EXAM)",			8, 1, 1);
-	insert_one_control(TRUE,  4, "(DEPOSIT)",		8, 1, 1);
-	insert_one_control(TRUE,  5, "(CONT)",			8, 1, 1);
-	insert_one_control(TRUE,  6, "(HALT)",			8, 1, 1);
-	insert_one_control(TRUE,  7, "(S_BUS_CYCLE)",		8, 1, 1);
-	insert_one_control(TRUE,  8, "(START)",			8, 1, 1);
-	insert_one_control(TRUE,  9, "(ADDR_SELECT)",		8, 3, 1);
-	insert_one_control(TRUE, 10, "(DATA_SELECT)",		8, 2, 1);
-	insert_one_control(TRUE, 11, "(PANEL_LOCK)",		8, 1, 1);
-	insert_one_control(TRUE, 12, "(POWER)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  0, "(SR)",			8, 22, 3);
+	allocate_and_insert_one_control(TRUE,  1, "(LAMPTEST)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  2, "(LOAD_ADRS)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  3, "(EXAM)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  4, "(DEPOSIT)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  5, "(CONT)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  6, "(HALT)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  7, "(S_BUS_CYCLE)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  8, "(START)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  9, "(ADDR_SELECT)",		8, 3, 1);
+	allocate_and_insert_one_control(TRUE, 10, "(DATA_SELECT)",		8, 2, 1);
+	allocate_and_insert_one_control(TRUE, 11, "(PANEL_LOCK)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE, 12, "(POWER)",			8, 1, 1);
 
-	insert_one_control(FALSE, 13, "(ADDRESS)",		8, 22, 3);
-	insert_one_control(FALSE, 14, "(DATA)",			8, 16, 2);
-	insert_one_control(FALSE, 15, "(PARITY_HIGH)",		8, 1, 1);
-	insert_one_control(FALSE, 16, "(PARITY_LOW)",		8, 1, 1);
-	insert_one_control(FALSE, 17, "(PAR_ERR)",		8, 1, 1);
-	insert_one_control(FALSE, 18, "(ADRS_ERR)",		8, 1, 1);
-	insert_one_control(FALSE, 19, "(RUN)",			8, 1, 1);
-	insert_one_control(FALSE, 20, "(PAUSE)",		8, 1, 1);
-	insert_one_control(FALSE, 21, "(MASTER)",		8, 1, 1);
-	insert_one_control(FALSE, 22, "(MMR0_MODE)",		8, 3, 1);
-	insert_one_control(FALSE, 23, "(DATA_SPACE)",		8, 1, 1);
-	insert_one_control(FALSE, 24, "(ADDRESSING_16)",	8, 1, 1);
-	insert_one_control(FALSE, 25, "(ADDRESSING_18)",	8, 1, 1);
-	insert_one_control(FALSE, 26, "(ADDRESSING_22)",	8, 1, 1);
-	insert_one_control(FALSE, 27, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
-	insert_one_control(FALSE, 28, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
+	allocate_and_insert_one_control(FALSE, 13, "(ADDRESS)",			8, 22, 3);
+	allocate_and_insert_one_control(FALSE, 14, "(DATA)",			8, 16, 2);
+	allocate_and_insert_one_control(FALSE, 15, "(PARITY_HIGH)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 16, "(PARITY_LOW)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 17, "(PAR_ERR)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 18, "(ADRS_ERR)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 19, "(RUN)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 20, "(PAUSE)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 21, "(MASTER)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 22, "(MMR0_MODE)",		8, 3, 1);
+	allocate_and_insert_one_control(FALSE, 23, "(DATA_SPACE)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 24, "(ADDRESSING_16)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 25, "(ADDRESSING_18)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 26, "(ADDRESSING_22)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 27, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
+	allocate_and_insert_one_control(FALSE, 28, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
 }
 
 // Code to dissect the packets.
@@ -495,8 +510,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 	struct pidp11_request_key *new_conversation_request_key;
 	struct pidp11_request_val *conversation_request_val = NULL;
 
-	struct control_request_key control_request_key;
-	struct control_request_key *new_control_request_key;
 	struct control_request_val *control_request_val = NULL;
 
 	int		i;
@@ -714,30 +727,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 				// We have to add each control to a list, so we can find it again, when we interpret the
 				// control values.
-				control_request_key.position = conversation_request_val->pidp11_control_index;
-				control_request_val = (struct control_request_val *) wmem_map_lookup(control_request_hash, &control_request_key);
-
-				if(control_request_val) {
-					// Control already exists, but might not match, so free it before inserting a new one.
-					if(control_request_val->pidp11_control_name) {
-						wmem_free(wmem_epan_scope(), control_request_val->pidp11_control_name);
-					}
-					wmem_map_remove(control_request_hash, &control_request_key);
-				}
-
-				DEBUG("packet=%d inserting %s control %d, %s", pinfo->num, is_input ? "input" : "output", control_request_key.position, name);
-				new_control_request_key = wmem_new(wmem_epan_scope(), struct control_request_key);
-				*new_control_request_key = control_request_key;
-
-				control_request_val = wmem_new(wmem_epan_scope(), struct control_request_val);
-				control_request_val->position			= control_request_key.position;
-				control_request_val->is_input			= is_input;
-				control_request_val->pidp11_control_name	= name;
-				control_request_val->pidp11_control_radix	= radix;
-				control_request_val->pidp11_control_bits	= bits;
-				control_request_val->pidp11_control_bytes	= bytes;
-
-				wmem_map_insert(control_request_hash, new_control_request_key, control_request_val);
+				insert_one_control(is_input, conversation_request_val->pidp11_control_index, name, radix, bits, bytes);
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
 				// Nothing to do.
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
