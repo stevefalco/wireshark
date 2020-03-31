@@ -262,21 +262,8 @@ static int		pidp11_control_index			= -1;
 static wmem_map_t *pidp11_request_hash = NULL;
 static wmem_map_t *control_request_hash = NULL;
 
-/* Global sample preference ("controls" display of numbers) */
-static gboolean pref_hex = FALSE;
-/* Global sample port preference - real port preferences should generally
- * default to 0 unless there is an IANA-registered (or equivalent) port for your
- * protocol. */
-#define pidp11_UDP_PORT 0
-static guint udp_port_pref = pidp11_UDP_PORT;
-
 // Initialize the subtree pointer(s).
 static gint ett_top_level = -1;
-
-/* A sample #define of the minimum length (in bytes) of the protocol data.
- * If data is received with fewer than this many bytes it is rejected by
- * the current dissector. */
-#define pidp11_MIN_LENGTH 8
 
 static char *low_funcs[] = {
 	"Get Info",
@@ -296,6 +283,7 @@ static char *high_funcs[] = {
 	"Test From Server",
 };
 
+// Hashing functions for request/reply packet matching.
 static gint
 pidp11_equal(gconstpointer v, gconstpointer w)
 {
@@ -320,6 +308,7 @@ pidp11_hash(gconstpointer v)
 	return val;
 }
 
+// Hashing functions for control number/name matching.
 static gint
 control_equal(gconstpointer v, gconstpointer w)
 {
@@ -494,11 +483,10 @@ fake_controls(void)
 	insert_one_control(FALSE, 28, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
 }
 
-/* Code to actually dissect the packets */
+// Code to dissect the packets.
 static int
 dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
 {
-	/* Set up structures needed to add the protocol subtree and manage it */
 	proto_item *ti;
 	proto_tree *pidp11_tree;
 
@@ -906,17 +894,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 	// Return the amount of data we were able to dissect.
 	return tvb_captured_length(tvb);
 }
-
-/* Register the protocol with Wireshark.
- *
- * This format is require because a script is used to build the C function that
- * calls all the protocol registration.
- */
+// Register the protocol with Wireshark.
 void
 proto_register_pidp11(void)
 {
-	module_t	*pidp11_module;
-
 	// Setup list of header fields	See Section 1.5 of README.dissector for details.
 	static hf_register_info hf[] = {
 		{ &hf_pidp11_sequence_number,		{ "Sequence Number",	"pidp11.seq_num",	FT_UINT32,	BASE_HEX,	NULL, 0, NULL, HFILL } },
@@ -972,36 +953,12 @@ proto_register_pidp11(void)
 
 	DEBUG("start");
 
-	/* Register the protocol name and description */
+	// Register the protocol name and description.
 	proto_pidp11 = proto_register_protocol("PiDP-11", "PiDP-11", "pidp-11");
 
-	/* Required function calls to register the header fields and subtrees */
+	// Register the header fields and subtrees.
 	proto_register_field_array(proto_pidp11, hf, array_length(hf));
 	proto_register_subtree_array(ett, array_length(ett));
-
-	/* Register a preferences module (see section 2.6 of README.dissector
-	 * for more details). Registration of a prefs callback is not required
-	 * if there are no preferences that affect protocol registration (an example
-	 * of a preference that would affect registration is a port preference).
-	 * If the prefs callback is not needed, use NULL instead of
-	 * proto_reg_handoff_pidp11 in the following.
-	 */
-	pidp11_module = prefs_register_protocol(proto_pidp11, proto_reg_handoff_pidp11);
-
-	/* Register a preferences module under the preferences subtree.
-	 * Only use this function instead of prefs_register_protocol (above) if you
-	 * want to group preferences of several protocols under one preferences
-	 * subtree.
-	 *
-	 * Argument subtree identifies grouping tree node name, several subnodes can
-	 * be specified using slash '/' (e.g. "OSI/X.500" - protocol preferences
-	 * will be accessible under Protocols->OSI->X.500-><PROTOSHORTNAME>
-	 * preferences node.
-	 */
-	pidp11_module = prefs_register_protocol_subtree("", proto_pidp11, proto_reg_handoff_pidp11);
-
-	prefs_register_bool_preference(pidp11_module, "show_hex", "Display numbers in Hex", "Enable to display numerical values in hexadecimal.", &pref_hex);
-	prefs_register_uint_preference(pidp11_module, "udp.port", "pidp11 UDP Port", " pidp11 UDP port if other than the default", 10, &udp_port_pref);
 
 	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), pidp11_hash, pidp11_equal);
 	control_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), control_hash, control_equal);
@@ -1010,7 +967,7 @@ proto_register_pidp11(void)
 	fake_controls();
 }
 
-/* Heuristics test */
+// Heuristics test.
 static gboolean
 test_pidp11(packet_info *pinfo _U_, tvbuff_t *tvb, int offset _U_, void *data _U_)
 {
@@ -1024,22 +981,15 @@ test_pidp11(packet_info *pinfo _U_, tvbuff_t *tvb, int offset _U_, void *data _U
 		return FALSE;
 	}
 
-	/* Check that there's enough data present to run the heuristics. If there
-	 * isn't, reject the packet; it will probably be dissected as data and if
-	 * the user wants it dissected despite it being short they can use the
-	 * "Decode-As" functionality. If your heuristic needs to look very deep into
-	 * the packet you may not want to require *all* data to be present, but you
-	 * should ensure that the heuristic does not access beyond the captured
-	 * length of the packet regardless. */
+	// Check that there's enough data present to run the heuristics. If
+	// there isn't, reject the packet.
 	DEBUG("caplen %d", tvb_captured_length(tvb));
 	if(tvb_captured_length(tvb) < MIN_LEN) {
 		DEBUG("caplen too short");
 		return FALSE;
 	}
 
-	/* Fetch some values from the packet header using tvb_get_*(). If these
-	 * values are not valid/possible in your protocol then return 0 to give
-	 * some other dissector a chance to dissect it. */
+	// Fetch some values from the packet header.
 	pidp11_sequence_number		= tvb_get_ntohl(tvb, 0x00);
 	pidp11_direction		= tvb_get_ntohl(tvb, 0x04);
 	pidp11_rpc_version		= tvb_get_ntohl(tvb, 0x08);
@@ -1120,53 +1070,18 @@ dissect_pidp11_heur_udp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, voi
 	return (udp_dissect_pdus(tvb, pinfo, tree, 5, test_pidp11, get_pidp11_len, dissect_pidp11, data) != 0);
 }
 
-/* If this dissector uses sub-dissector registration add a registration routine.
- * This exact format is required because a script is used to find these
- * routines and create the code that calls these routines.
- *
- * If this function is registered as a prefs callback (see
- * prefs_register_protocol above) this function is also called by Wireshark's
- * preferences manager whenever "Apply" or "OK" are pressed. In that case, it
- * should accommodate being called more than once by use of the static
- * 'initialized' variable included below.
- *
- * This form of the reg_handoff function is used if if you perform registration
- * functions which are dependent upon prefs. See below this function for a
- * simpler form which can be used if there are no prefs-dependent registration
- * functions.
- */
+// Register for handoffs.
 void
 proto_reg_handoff_pidp11(void)
 {
 	static gboolean initialized = FALSE;
-	static dissector_handle_t pidp11_handle;
-	static int current_port;
 
 	DEBUG("start");
 	if (!initialized) {
-		/* Use create_dissector_handle() to indicate that
-		 * dissect_pidp11() returns the number of bytes it dissected (or 0
-		 * if it thinks the packet does not belong to PROTONAME).
-		 */
-		pidp11_handle = create_dissector_handle(dissect_pidp11, proto_pidp11);
+		create_dissector_handle(dissect_pidp11, proto_pidp11);
+		heur_dissector_add("udp", dissect_pidp11_heur_udp, "pidp11 over UDP", "pidp11_udp", proto_pidp11, HEURISTIC_ENABLE);
 		initialized = TRUE;
-
-	} else {
-		/* If you perform registration functions which are dependent upon
-		 * prefs then you should de-register everything which was associated
-		 * with the previous settings and re-register using the new prefs
-		 * settings here. In general this means you need to keep track of
-		 * the pidp11_handle and the value the preference had at the time
-		 * you registered.  The pidp11_handle value and the value of the
-		 * preference can be saved using local statics in this
-		 * function (proto_reg_handoff).
-		 */
-		dissector_delete_uint("udp.port", current_port, pidp11_handle);
 	}
-
-	current_port = udp_port_pref;
-
-	heur_dissector_add("udp", dissect_pidp11_heur_udp, "pidp11 over UDP", "pidp11_udp", proto_pidp11, HEURISTIC_ENABLE);
 }
 
 // Local Variables:
