@@ -258,6 +258,7 @@ static int		hf_pidp11_rpc_param_get_obj_handle	= -1;
 static int		hf_pidp11_rpc_param_get_param_handle	= -1;
 static int		hf_pidp11_rpc_param_get_state_value	= -1;
 static int		hf_pidp11_rpc_param_get_mode_value	= -1;
+static int		hf_pidp11_expert			= -1;
 
 // Provide a way to index into these fields.
 static int		*slots[] = {
@@ -290,6 +291,8 @@ static int		pidp11_blinken_function			= -1;
 static int		pidp11_control_index			= -1;
 
 static wmem_map_t *pidp11_request_hash = NULL;
+
+static expert_field ei_pidp11_expert = EI_INIT;
 
 // Initialize the subtree pointer.
 static gint top_level = -1;
@@ -337,7 +340,7 @@ pidp11_hash(gconstpointer v)
 	return val;
 }
 
-#define MAX_CONTROLS		30
+#define MAX_CONTROLS		10
 
 static struct control {
 	int		valid;
@@ -357,7 +360,7 @@ static struct control_cache input_controls[MAX_CONTROLS];
 static struct control_cache output_controls[MAX_CONTROLS];
 
 // Unfortunately, inputs and outputs are interleaved, so we have to do a linear search for the
-// correct element.
+// correct element.  We keep a cache of found items to help avoid searches wherever possible.
 static struct control *
 find_label(
 		int		is_input,
@@ -373,6 +376,11 @@ find_label(
 
 	DEBUG("finding %s %d", is_input ? "input" : "output", number);
 
+	if(number >= MAX_CONTROLS) {
+		DEBUG("number exceeds MAX_CONTROLS");
+		return NULL;
+	}
+
 	// First check the cache.
 	if(is_input) {
 		p = &input_controls[number];
@@ -385,7 +393,7 @@ find_label(
 	}
 	DEBUG("not found in cache");
 
-	// Not found in the cache - search for it.
+	// Not found in the cache - we have to search for it.
 	in_count = -1;
 	out_count = -1;
 	for(i = 0; i < MAX_CONTROLS; i++) {
@@ -429,7 +437,7 @@ find_label(
 	return NULL;
 }
 
-static void
+static int
 insert_one_control(
 		int		is_input,
 		int		slot,
@@ -439,10 +447,17 @@ insert_one_control(
 		int		bytes
 		)
 {
-	struct control *pVal = &controls[slot];
+	struct control *pVal;
 	int i;
 
 	DEBUG("%s control %d, %s", is_input ? "input" : "output", slot, name);
+
+	if(slot >= MAX_CONTROLS) {
+		DEBUG("Slot out of range - cannot insert");
+		return 0;
+	}
+
+	pVal = &controls[slot];
 
 	// Clear caches, as the entries may have changed.
 	for(i = 0; i < MAX_CONTROLS; i++) {
@@ -464,9 +479,11 @@ insert_one_control(
 	pVal->pidp11_control_radix	= radix;
 	pVal->pidp11_control_bits	= bits;
 	pVal->pidp11_control_bytes	= bytes;
+
+	return 1;
 }
 
-static void
+static int
 allocate_and_insert_one_control(
 		int		is_input,
 		int		slot,
@@ -480,11 +497,11 @@ allocate_and_insert_one_control(
 	char *p = (char *)wmem_alloc(wmem_epan_scope(), name_len);
 
 	if(!p) {
-		return;
+		return 0;
 	}
 	strncpy(p, name, name_len);
 
-	insert_one_control(is_input, slot, p, radix, bits, bytes);
+	return insert_one_control(is_input, slot, p, radix, bits, bytes);
 }
 
 // In many cases, the capture will not include the RPC_BLINKENLIGHT_API_GETCONTROLINFO messages.
@@ -540,6 +557,7 @@ static int
 dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
 {
 	proto_item *ti;
+	proto_item *expert_ti;
 	proto_tree *pidp11_tree;
 
 	conversation_t *conversation;
@@ -670,6 +688,12 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		}
 	}
 
+	DEBUG("adding server tree");
+	ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
+	DEBUG("added server tree");
+
+	pidp11_tree = proto_item_add_subtree(ti, top_level);
+
 	if(conversation_request_val && (pidp11_direction == 1)) {
 		// Server (Panel)
 		DEBUG("val exists, our seq=0x%08x, hashed seq=0x%08x", pidp11_sequence_number, conversation_request_val->pidp11_sequence_number);
@@ -682,12 +706,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		} else {
 			g_snprintf(buf, BUF_LEN, "Server (not matched)");
 		}
-
-		DEBUG("adding server tree");
-		ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
-		DEBUG("added server tree");
-
-		pidp11_tree = proto_item_add_subtree(ti, top_level);
 
 		len = SU;
 		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
@@ -764,7 +782,12 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 				// We have to add each control to a list, so we can find it again, when we interpret the
 				// control values.
-				insert_one_control(is_input, conversation_request_val->pidp11_control_index, name, radix, bits, bytes);
+				if(!insert_one_control(is_input, conversation_request_val->pidp11_control_index, name, radix, bits, bytes)) {
+					expert_ti = proto_tree_add_string_format(pidp11_tree, hf_pidp11_expert, tvb, 0, 0, "", "No room to insert %s", name);
+					expert_add_info(pinfo, expert_ti, &ei_pidp11_expert);
+
+					wmem_free(wmem_epan_scope(), name);
+				}
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
 				// Nothing to do.
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
@@ -837,12 +860,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		}
 	} else {
 		// Client (SIMH)
-		DEBUG("adding client tree");
-		ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
-		DEBUG("added client tree");
-
-		pidp11_tree = proto_item_add_subtree(ti, top_level);
-
 		len = SU;
 		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
 
@@ -962,6 +979,8 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 void
 proto_register_pidp11(void)
 {
+	expert_module_t *expert_pidp11;
+
 	// Setup list of header fields.  Unfortunately, we cannot add these dynamically,
 	// so we have to create an arbitrary number of "hf_pidp11_getcontrolvalue"
 	// elements.  We only need 16 of them, because there are 16 outputs (and
@@ -1010,11 +1029,16 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_rpc_param_get_param_handle,{ "Parameter Handle",	"pidp11.param_handle",	FT_UINT32,	BASE_NONE,	VALS(param_handle), 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_state_value,	{ "State Value",	"pidp11.state_value",	FT_UINT32,	BASE_NONE,	VALS(state_param_value), 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_mode_value,	{ "Mode Value",		"pidp11.mode_value",	FT_UINT32,	BASE_NONE,	VALS(mode_param_value), 0, NULL, HFILL } },
+		{ &hf_pidp11_expert,			{ "Expert",		"pidp11.expert",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 	};
 
 	// Setup protocol subtree array.
 	static gint *sta[] = {
 		&top_level,
+	};
+
+	static ei_register_info ei[] = {
+		{ &ei_pidp11_expert, { "pidp11.expert", PI_MALFORMED, PI_ERROR, "No room to insert", EXPFILL } }
 	};
 
 	DEBUG("start");
@@ -1025,6 +1049,9 @@ proto_register_pidp11(void)
 	// Register the header fields and subtrees.
 	proto_register_field_array(proto_pidp11, hf, array_length(hf));
 	proto_register_subtree_array(sta, array_length(sta));
+
+	expert_pidp11 = expert_register_protocol(proto_pidp11);
+	expert_register_field_array(expert_pidp11, ei, array_length(ei));
 
 	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), pidp11_hash, pidp11_equal);
 
