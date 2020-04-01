@@ -263,7 +263,6 @@ static int		hf_pidp11_program_number		= -1;
 static int		hf_pidp11_blinken_version		= -1;
 static int		hf_pidp11_blinken_function		= -1;
 static int		hf_pidp11_error_code			= -1;
-static int		hf_pidp11_getinfo_info			= -1;
 static int		hf_pidp11_getpanelinfo_index		= -1;
 static int		hf_pidp11_getpanelinfo_name		= -1;
 static int		hf_pidp11_getpanelinfo_in_count		= -1;
@@ -513,7 +512,17 @@ allocate_and_insert_one_control(
 //
 // It is important that the order of the assignments here match those in the pidp11 source code.
 // Otherwise, if we had a partial capture of RPC_BLINKENLIGHT_API_GETCONTROLINFO messages, we
-// might replace the wrong entry.  See register_controls() in 11_pidp_server/pidp11/main.c
+// might replace the wrong entry.  See register_controls() in 11_pidp_server/pidp11/main.c,
+// and of course if that code changes, we'll have to change too.
+//
+// NB: I considered dispensing with the slot field, but that won't work.  Wireshark can process
+// the packets in any order, so we must have the slot number to keep things straight.
+//
+// It would have been better if RPC_BLINKENLIGHT_API_GETCONTROLINFO was split into two different
+// message types - one for input and one for output - with separate "number spaces".  Then there
+// would be no interleaving, and the slot numbers would directly map to the offsets in the
+// RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES and RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES
+// messages.
 static void
 fake_controls(void)
 {
@@ -566,6 +575,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 	int		j;
 	int		k;
 	int		k2;
+	int		m;
 
 	guint		offset	= 0;
 	int		len	= 0;
@@ -722,12 +732,39 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			offset += len;
 			DEBUG("message type %d", conversation_request_val->pidp11_blinken_function);
 			if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETINFO) {
-				// It would be better to honor the \n chars here.  len is equal to the total length of the
-				// string, including the 4-byte size field preceding the string characters.
-				//
-				// Note that strings are padded with nulls to the next 4-byte boundary.
-				len = SU + (((tvb_get_ntohl(tvb, offset) + (SU - 1)) / SU) * SU);
-				proto_tree_add_item(pidp11_tree, hf_pidp11_getinfo_info, tvb, offset, SU, ENC_UTF_8 | ENC_BIG_ENDIAN);
+				// Note that strings are padded with nulls to the next 4-byte boundary, so
+				// we have to round "len" up, as well as adding in an extra "SU" to account
+				// for the length word prefix.
+				int data_len = tvb_get_ntohl(tvb, offset);
+				len = SU + (((data_len + (SU - 1)) / SU) * SU);
+
+				// Allocate space for the text.
+				char *info = (char *)wmem_alloc(wmem_epan_scope(), data_len + 1);
+
+				// Get a copy - we have to modify it to break it at newline boundaries.
+				tvb_memcpy(tvb, info, offset + SU, data_len);
+				info[data_len] = 0;
+
+				// Scan the string, and chop/display it at the newline boundaries.
+				int start = offset + SU;
+				int str_len;
+				char *p, *q;
+				m = 0;
+				for(p = q = info; *p != 0; p++) {
+					if(*p == '\n') {
+						*p = 0;
+						str_len = (p + 1) - q; // p hasn't incremented yet, so add one.
+						proto_tree_add_string_format(pidp11_tree, *slots[m++], tvb, start, str_len, "", "%s", q);
+						start += str_len;
+						q = (p + 1);
+						if(m >= NUM_SLOTS) {
+							break;
+						}
+					}
+				}
+
+				// Done with the copy.
+				wmem_free(wmem_epan_scope(), info);
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANELINFO) {
 				len = SU + (((tvb_get_ntohl(tvb, offset) + (SU - 1)) / SU) * SU);
 				proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_name, tvb, offset, SU, ENC_UTF_8 | ENC_BIG_ENDIAN);
@@ -802,7 +839,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					k = 0;
 					for(i = 0; TRUE; i++) {
 						if(i >= NUM_SLOTS) {
-							// We have run out of hf slots.
 							DEBUG("No more hf slots");
 							goto QUIT_INPUT;
 						}
@@ -920,7 +956,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				for(i = 0; TRUE; i++) {
 					if(i >= NUM_SLOTS) {
 						// We have run out of hf slots.
-						DEBUG("No more HF slots");
+						DEBUG("No more hf slots");
 						goto QUIT_OUTPUT;
 					}
 					pVal = find_label(FALSE, i);
@@ -990,7 +1026,6 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_blinken_version,		{ "Blinken Version",	"pidp11.blink_vers",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_blinken_function,		{ "Blinken Function",	"pidp11.blink_func",	FT_UINT32,	BASE_NONE,	VALS(blinken_function), 0, NULL, HFILL } },
 		{ &hf_pidp11_error_code,		{ "Error Code",		"pidp11.error_code",	FT_UINT32,	BASE_NONE,	VALS(error_code), 0, NULL, HFILL } },
-		{ &hf_pidp11_getinfo_info,		{ "Info",		"pidp11.info",		FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_index,	{ "Panel Index",	"pidp11.panel_index",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_name,		{ "Panel Name",		"pidp11.panel_name",	FT_UINT_STRING,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getpanelinfo_in_count,	{ "Input Count",	"pidp11.in_count",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
