@@ -519,39 +519,42 @@ allocate_and_insert_one_control(
 // fake ones that we are adding here.
 //
 // We add the names in parenthesis here, to indicate that they are inferred, rather than actual.
+//
+// It is important that the order of the assignments here match those in the pidp11 source code.
+// Otherwise, if we had a partial capture of RPC_BLINKENLIGHT_API_GETCONTROLINFO messages, we
+// might replace the wrong entry.  See register_controls() in 11_pidp_server/pidp11/main.c
 static void
 fake_controls(void)
 {
-	allocate_and_insert_one_control(TRUE,  0, "(SR)",			8, 22, 3);
-	allocate_and_insert_one_control(TRUE,  1, "(LAMPTEST)",			8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  2, "(LOAD_ADRS)",		8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  3, "(EXAM)",			8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  4, "(DEPOSIT)",			8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  5, "(CONT)",			8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  6, "(HALT)",			8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  7, "(S_BUS_CYCLE)",		8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  8, "(START)",			8, 1, 1);
-	allocate_and_insert_one_control(TRUE,  9, "(ADDR_SELECT)",		8, 3, 1);
-	allocate_and_insert_one_control(TRUE, 10, "(DATA_SELECT)",		8, 2, 1);
-	allocate_and_insert_one_control(TRUE, 11, "(PANEL_LOCK)",		8, 1, 1);
-	allocate_and_insert_one_control(TRUE, 12, "(POWER)",			8, 1, 1);
-
-	allocate_and_insert_one_control(FALSE, 13, "(ADDRESS)",			8, 22, 3);
-	allocate_and_insert_one_control(FALSE, 14, "(DATA)",			8, 16, 2);
-	allocate_and_insert_one_control(FALSE, 15, "(PARITY_HIGH)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 16, "(PARITY_LOW)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 17, "(PAR_ERR)",			8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 18, "(ADRS_ERR)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 19, "(RUN)",			8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 20, "(PAUSE)",			8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 21, "(MASTER)",			8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 22, "(MMR0_MODE)",		8, 3, 1);
-	allocate_and_insert_one_control(FALSE, 23, "(DATA_SPACE)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 24, "(ADDRESSING_16)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 25, "(ADDRESSING_18)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 26, "(ADDRESSING_22)",		8, 1, 1);
-	allocate_and_insert_one_control(FALSE, 27, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
-	allocate_and_insert_one_control(FALSE, 28, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
+	allocate_and_insert_one_control(TRUE,   0, "(SR)",			8, 22, 3);
+	allocate_and_insert_one_control(TRUE,   1, "(LAMPTEST)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   2, "(LOAD_ADRS)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   3, "(EXAM)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   4, "(DEPOSIT)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   5, "(CONT)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   6, "(HALT)",			8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   7, "(S_BUS_CYCLE)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,   8, "(START)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE,  9, "(ADDRESS)",			8, 22, 3);
+	allocate_and_insert_one_control(FALSE, 10, "(DATA)",			8, 16, 2);
+	allocate_and_insert_one_control(FALSE, 11, "(PARITY_HIGH)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 12, "(PARITY_LOW)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 13, "(PAR_ERR)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 14, "(ADRS_ERR)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 15, "(RUN)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 16, "(PAUSE)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 17, "(MASTER)",			8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 18, "(MMR0_MODE)",		8, 3, 1);
+	allocate_and_insert_one_control(FALSE, 19, "(DATA_SPACE)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 20, "(ADDRESSING_16)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 21, "(ADDRESSING_18)",		8, 1, 1);
+	allocate_and_insert_one_control(FALSE, 22, "(ADDRESSING_22)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  23, "(ADDR_SELECT)",		8, 3, 1);
+	allocate_and_insert_one_control(TRUE,  24, "(DATA_SELECT)",		8, 2, 1);
+	allocate_and_insert_one_control(FALSE, 25, "(ADDR_SELECT_FEEDBACK)",	8, 8, 1);
+	allocate_and_insert_one_control(FALSE, 26, "(DATA_SELECT_FEEDBACK)",	8, 4, 1);
+	allocate_and_insert_one_control(TRUE,  27, "(PANEL_LOCK)",		8, 1, 1);
+	allocate_and_insert_one_control(TRUE,  28, "(POWER)",			8, 1, 1);
 }
 
 // Code to dissect the packets.
