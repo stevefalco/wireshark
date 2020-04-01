@@ -22,7 +22,7 @@
 
 // When enabling debug, be sure to change the LOG_FILE_PATH to where you want
 // the log file to land.
-#define ENABLE_DEBUG
+#undef ENABLE_DEBUG
 #define LOG_FILE_PATH	"/home/sfalco/log.wire"
 
 // Minimum packet length (UDP data portion).
