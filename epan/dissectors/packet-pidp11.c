@@ -253,12 +253,6 @@ static int		hf_pidp11_getcontrolvalue_12		= -1;
 static int		hf_pidp11_getcontrolvalue_13		= -1;
 static int		hf_pidp11_getcontrolvalue_14		= -1;
 static int		hf_pidp11_getcontrolvalue_15		= -1;
-static int		hf_pidp11_getcontrolvalue_16		= -1;
-static int		hf_pidp11_getcontrolvalue_17		= -1;
-static int		hf_pidp11_getcontrolvalue_18		= -1;
-static int		hf_pidp11_getcontrolvalue_19		= -1;
-static int		hf_pidp11_getcontrolvalue_20		= -1;
-static int		hf_pidp11_getcontrolvalue_21		= -1;
 static int		hf_pidp11_rpc_param_get_obj_class	= -1;
 static int		hf_pidp11_rpc_param_get_obj_handle	= -1;
 static int		hf_pidp11_rpc_param_get_param_handle	= -1;
@@ -283,12 +277,6 @@ static int		*slots[] = {
 	&hf_pidp11_getcontrolvalue_13,
 	&hf_pidp11_getcontrolvalue_14,
 	&hf_pidp11_getcontrolvalue_15,
-	&hf_pidp11_getcontrolvalue_16,
-	&hf_pidp11_getcontrolvalue_17,
-	&hf_pidp11_getcontrolvalue_18,
-	&hf_pidp11_getcontrolvalue_19,
-	&hf_pidp11_getcontrolvalue_20,
-	&hf_pidp11_getcontrolvalue_21,
 };
 #define NUM_SLOTS	((int)(sizeof(slots) / sizeof(int *)))
 
@@ -360,6 +348,14 @@ static struct control {
 	int		pidp11_control_bytes;
 } controls[MAX_CONTROLS];
 
+struct control_cache {
+	int		valid;
+	struct control	*p;
+};
+
+static struct control_cache input_controls[MAX_CONTROLS];
+static struct control_cache output_controls[MAX_CONTROLS];
+
 // Unfortunately, inputs and outputs are interleaved, so we have to do a linear search for the
 // correct element.
 static struct control *
@@ -368,13 +364,28 @@ find_label(
 		int		number
 		)
 {
-	int		i;
-	int		in_count;
-	int		out_count;
+	int			i;
+	int			in_count;
+	int			out_count;
 
-	struct control *pVal;
+	struct control		*pVal;
+	struct control_cache	*p;
 
 	DEBUG("finding %s %d", is_input ? "input" : "output", number);
+
+	// First check the cache.
+	if(is_input) {
+		p = &input_controls[number];
+	} else {
+		p = &output_controls[number];
+	}
+	if(p->valid) {
+		DEBUG("found in cache");
+		return p->p;
+	}
+	DEBUG("not found in cache");
+
+	// Not found in the cache - search for it.
 	in_count = -1;
 	out_count = -1;
 	for(i = 0; i < MAX_CONTROLS; i++) {
@@ -395,14 +406,20 @@ find_label(
 
 		if(is_input) {
 			if(number == in_count) {
-				// Found the correct input.
-				DEBUG("found input %d at %d", number, i);
+				// Found the correct input.  Insert it into the cache, and
+				// return it.
+				DEBUG("found input %d at %d, add to cache", number, i);
+				p->valid = TRUE;
+				p->p = pVal;
 				return pVal;
 			}
 		} else {
 			if(number == out_count) {
-				// Found the correct output.
-				DEBUG("found output %d at %d", number, i);
+				// Found the correct output.  Insert it into the cache, and
+				// return it.
+				DEBUG("found output %d at %d, add to cache", number, i);
+				p->valid = TRUE;
+				p->p = pVal;
 				return pVal;
 			}
 		}
@@ -423,8 +440,16 @@ insert_one_control(
 		)
 {
 	struct control *pVal = &controls[slot];
+	int i;
 
 	DEBUG("%s control %d, %s", is_input ? "input" : "output", slot, name);
+
+	// Clear caches, as the entries may have changed.
+	for(i = 0; i < MAX_CONTROLS; i++) {
+		input_controls[i].valid = FALSE;
+		output_controls[i].valid = FALSE;
+	}
+	DEBUG("cleared cache because of insert");
 
 	if(pVal->valid == TRUE) {
 		// Slot is already occupied, so free the old name before attaching a new one.
@@ -758,6 +783,8 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					k = 0;
 					for(i = 0; TRUE; i++) {
 						if(i >= NUM_SLOTS) {
+							// We have run out of hf slots.
+							DEBUG("No more hf slots");
 							goto QUIT_INPUT;
 						}
 						pVal = find_label(TRUE, i);
@@ -766,6 +793,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 							k2 = k;
 							for(j = 0; j < pVal->pidp11_control_bytes; j++) {
 								if(k >= value_bytes_len) {
+									DEBUG("No more data");
 									goto QUIT_INPUT;
 								}
 								value |= value_bytes_val[k++] << (j * 8);
@@ -876,6 +904,8 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				k = 0;
 				for(i = 0; TRUE; i++) {
 					if(i >= NUM_SLOTS) {
+						// We have run out of hf slots.
+						DEBUG("No more HF slots");
 						goto QUIT_OUTPUT;
 					}
 					pVal = find_label(FALSE, i);
@@ -884,6 +914,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 						k2 = k;
 						for(j = 0; j < pVal->pidp11_control_bytes; j++) {
 							if(k >= value_bytes_len) {
+								DEBUG("No more data");
 								goto QUIT_OUTPUT;
 							}
 							value |= value_bytes_val[k++] << (j * 8);
@@ -933,8 +964,8 @@ proto_register_pidp11(void)
 {
 	// Setup list of header fields.  Unfortunately, we cannot add these dynamically,
 	// so we have to create an arbitrary number of "hf_pidp11_getcontrolvalue"
-	// elements.  We should only need 16 of them, because there are 16 outputs (and
-	// 13 inputs) but I've added a few extras.
+	// elements.  We only need 16 of them, because there are 16 outputs (and
+	// 13 inputs).
 	static hf_register_info hf[] = {
 		{ &hf_pidp11_sequence_number,		{ "Sequence Number",	"pidp11.seq_num",	FT_UINT32,	BASE_HEX,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_direction,			{ "Direction",		"pidp11.direction",	FT_UINT32,	BASE_NONE,	VALS(RPC_direction), 0, NULL, HFILL } },
@@ -974,12 +1005,6 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_getcontrolvalue_13,	{ "Control 13",		"pidp11.control_13",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_14,	{ "Control 14",		"pidp11.control_14",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_getcontrolvalue_15,	{ "Control 15",		"pidp11.control_15",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getcontrolvalue_16,	{ "Control 16",		"pidp11.control_16",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getcontrolvalue_17,	{ "Control 17",		"pidp11.control_17",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getcontrolvalue_18,	{ "Control 18",		"pidp11.control_18",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getcontrolvalue_19,	{ "Control 19",		"pidp11.control_19",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getcontrolvalue_20,	{ "Control 20",		"pidp11.control_20",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
-		{ &hf_pidp11_getcontrolvalue_21,	{ "Control 21",		"pidp11.control_21",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_obj_class,	{ "Object Class",	"pidp11.obj_class",	FT_UINT32,	BASE_NONE,	VALS(param_class), 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_obj_handle,	{ "Object Handle",	"pidp11.obj_handle",	FT_UINT32,	BASE_DEC,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_param_handle,{ "Parameter Handle",	"pidp11.param_handle",	FT_UINT32,	BASE_NONE,	VALS(param_handle), 0, NULL, HFILL } },
