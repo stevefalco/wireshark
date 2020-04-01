@@ -15,7 +15,6 @@
 #include <config.h>
 
 #include <epan/conversation.h>
-#include <epan/expert.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
 
@@ -31,6 +30,9 @@
 
 // Buffer size.
 #define BUF_LEN		128
+
+// Maximum number of switches and LEDs that we handle.
+#define MAX_CONTROLS	30
 
 // RPC function numbers.
 #define RPC_BLINKENLIGHT_API_GETINFO			1
@@ -75,7 +77,7 @@
 // messages could be made much more space-efficient...
 #define SU		(sizeof(uint32_t))
 
-// Bit mask.
+// General bit mask.
 #define MASK(n)		((1 << (n)) - 1)
 
 // Logging mechanism.
@@ -132,6 +134,25 @@ struct pidp11_request_val {
 	int		pidp11_control_index;
 };
 
+// We store control parameters here, for use in get/set message decoding.
+static struct control {
+	int		valid;
+	int		is_input;
+	char		*name;
+	int		radix;
+	int		bits;
+	int		bytes;
+} controls[MAX_CONTROLS];
+
+// To avoid wasting time doing linear searches, we keep a cache of the
+// control offsets.
+struct control_cache {
+	int		valid;
+	struct control	*p;
+};
+static struct control_cache input_controls[MAX_CONTROLS];
+static struct control_cache output_controls[MAX_CONTROLS];
+
 // Map RPC function numbers to names.
 static const value_string blinken_function[] = {
 	{ RPC_BLINKENLIGHT_API_GETINFO,			"RPC_BLINKENLIGHT_API_GETINFO" },
@@ -146,6 +167,7 @@ static const value_string blinken_function[] = {
 	{ 0,	NULL }
 };
 
+// VALS() tables.
 static const value_string RPC_direction[] = {
 	{ 0, "Request from SIMH to Panel" },
 	{ 1, "Reply from Panel to SIMH" },
@@ -207,6 +229,25 @@ static const value_string mode_param_value[] = {
 	{ 0, NULL }
 };
 
+// Some strings for our INFO field.
+static char *low_funcs[] = {
+	"Get Info",
+	"Get Panel",
+	"Get Control Info",
+	"Set Control Value",
+	"Get Control Value",
+};
+
+static char *mid_funcs[] = {
+	"Get RPC Param",
+	"Set RPC Param",
+};
+
+static char *high_funcs[] = {
+	"Test To Server",
+	"Test From Server",
+};
+
 // Prototypes - these are our primary interface to the main wireshark system.
 void proto_reg_handoff_pidp11(void);
 void proto_register_pidp11(void);
@@ -258,7 +299,6 @@ static int		hf_pidp11_rpc_param_get_obj_handle	= -1;
 static int		hf_pidp11_rpc_param_get_param_handle	= -1;
 static int		hf_pidp11_rpc_param_get_state_value	= -1;
 static int		hf_pidp11_rpc_param_get_mode_value	= -1;
-static int		hf_pidp11_expert			= -1;
 
 // Provide a way to index into these fields.
 static int		*slots[] = {
@@ -281,39 +321,11 @@ static int		*slots[] = {
 };
 #define NUM_SLOTS	((int)(sizeof(slots) / sizeof(int *)))
 
-// Values of the fields.
-static uint32_t		pidp11_sequence_number			= -1;
-static int		pidp11_direction			= -1;
-static int		pidp11_rpc_version			= -1;
-static int		pidp11_program_number			= -1;
-static int		pidp11_blinken_version			= -1;
-static int		pidp11_blinken_function			= -1;
-static int		pidp11_control_index			= -1;
-
-static wmem_map_t *pidp11_request_hash = NULL;
-
-static expert_field ei_pidp11_expert = EI_INIT;
-
 // Initialize the subtree pointer.
-static gint top_level = -1;
+static gint ett_pidp11 = -1;
 
-static char *low_funcs[] = {
-	"Get Info",
-	"Get Panel",
-	"Get Control Info",
-	"Set Control Value",
-	"Get Control Value",
-};
-
-static char *mid_funcs[] = {
-	"Get RPC Param",
-	"Set RPC Param",
-};
-
-static char *high_funcs[] = {
-	"Test To Server",
-	"Test From Server",
-};
+// Use a hash table to associate request/reply packets.
+static wmem_map_t *pidp11_request_hash = NULL;
 
 // Hashing functions for request/reply packet matching.
 static gint
@@ -340,27 +352,9 @@ pidp11_hash(gconstpointer v)
 	return val;
 }
 
-#define MAX_CONTROLS		10
-
-static struct control {
-	int		valid;
-	int		is_input;
-	char		*pidp11_control_name;
-	int		pidp11_control_radix;
-	int		pidp11_control_bits;
-	int		pidp11_control_bytes;
-} controls[MAX_CONTROLS];
-
-struct control_cache {
-	int		valid;
-	struct control	*p;
-};
-
-static struct control_cache input_controls[MAX_CONTROLS];
-static struct control_cache output_controls[MAX_CONTROLS];
-
-// Unfortunately, inputs and outputs are interleaved, so we have to do a linear search for the
-// correct element.  We keep a cache of found items to help avoid searches wherever possible.
+// Unfortunately, inputs and outputs are interleaved, so we have to do a
+// linear search for the correct element.  We keep a cache of found items
+// to help avoid searches wherever possible.
 static struct control *
 find_label(
 		int		is_input,
@@ -404,8 +398,9 @@ find_label(
 			continue;
 		}
 
-		// There is something in this slot.  Update the appropriate tally.  Inputs
-		// and outputs are interleaved, so we have to keep our own counters.
+		// There is something in this slot.  Update the appropriate
+		// tally.  Inputs and outputs are interleaved, so we have to
+		// keep our own counters.
 		if(pVal->is_input) {
 			in_count++;
 		} else {
@@ -414,8 +409,8 @@ find_label(
 
 		if(is_input) {
 			if(number == in_count) {
-				// Found the correct input.  Insert it into the cache, and
-				// return it.
+				// Found the correct input.  Insert it into
+				// the cache, and return it.
 				DEBUG("found input %d at %d, add to cache", number, i);
 				p->valid = TRUE;
 				p->p = pVal;
@@ -423,8 +418,8 @@ find_label(
 			}
 		} else {
 			if(number == out_count) {
-				// Found the correct output.  Insert it into the cache, and
-				// return it.
+				// Found the correct output.  Insert it into
+				// the cache, and return it.
 				DEBUG("found output %d at %d, add to cache", number, i);
 				p->valid = TRUE;
 				p->p = pVal;
@@ -456,7 +451,6 @@ insert_one_control(
 		DEBUG("Slot out of range - cannot insert");
 		return 0;
 	}
-
 	pVal = &controls[slot];
 
 	// Clear caches, as the entries may have changed.
@@ -467,18 +461,20 @@ insert_one_control(
 	DEBUG("cleared cache because of insert");
 
 	if(pVal->valid == TRUE) {
-		// Slot is already occupied, so free the old name before attaching a new one.
-		if(pVal->pidp11_control_name) {
-			wmem_free(wmem_epan_scope(), pVal->pidp11_control_name);
+		// Slot is already occupied, so free the old name before
+		// attaching a new one.
+		if(pVal->name) {
+			wmem_free(wmem_epan_scope(), pVal->name);
 		}
 	}
 
-	pVal->valid			= TRUE;
-	pVal->is_input			= is_input;
-	pVal->pidp11_control_name	= name;
-	pVal->pidp11_control_radix	= radix;
-	pVal->pidp11_control_bits	= bits;
-	pVal->pidp11_control_bytes	= bytes;
+	// Store the parameters.
+	pVal->valid	= TRUE;
+	pVal->is_input	= is_input;
+	pVal->name	= name;
+	pVal->radix	= radix;
+	pVal->bits	= bits;
+	pVal->bytes	= bytes;
 
 	return 1;
 }
@@ -513,7 +509,7 @@ allocate_and_insert_one_control(
 // If we do capture the RPC_BLINKENLIGHT_API_GETCONTROLINFO messages, those names will replace the
 // fake ones that we are adding here.
 //
-// We add the names in parenthesis here, to indicate that they are inferred, rather than actual.
+// We add the names in parenthesis, to indicate that they are inferred, rather than actual.
 //
 // It is important that the order of the assignments here match those in the pidp11 source code.
 // Otherwise, if we had a partial capture of RPC_BLINKENLIGHT_API_GETCONTROLINFO messages, we
@@ -556,8 +552,7 @@ fake_controls(void)
 static int
 dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
 {
-	proto_item *ti;
-	proto_item *expert_ti;
+	// This is our subtree.
 	proto_tree *pidp11_tree;
 
 	conversation_t *conversation;
@@ -579,6 +574,13 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 	int		value_bytes_len;
 	uint32_t	*value_bytes_val;
 	uint32_t	value;
+
+	uint32_t	pidp11_sequence_number;
+	int		pidp11_direction;
+	int		pidp11_rpc_version;
+	int		pidp11_program_number;
+	int		pidp11_blinken_version;
+	int		pidp11_blinken_function;
 
 	DEBUG("begin");
 
@@ -623,10 +625,6 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			g_snprintf(buf, BUF_LEN, "Client (%s)", high_funcs[pidp11_blinken_function - TERTIARY_MIN]);
 		} else {
 			return 0;
-		}
-
-		if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
-			pidp11_control_index = tvb_get_ntohl(tvb, 0x2c);
 		}
 	} else if(pidp11_direction == 1) {
 		// To client.
@@ -676,7 +674,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 			conversation_request_val->pidp11_control_index	= 0;
 			if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
-				conversation_request_val->pidp11_control_index = pidp11_control_index;
+				conversation_request_val->pidp11_control_index = tvb_get_ntohl(tvb, 0x2c);
 			}
 
 			wmem_map_insert(pidp11_request_hash, new_conversation_request_key, conversation_request_val);
@@ -688,11 +686,10 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		}
 	}
 
-	DEBUG("adding server tree");
-	ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
-	DEBUG("added server tree");
-
-	pidp11_tree = proto_item_add_subtree(ti, top_level);
+	DEBUG("adding subtree");
+	proto_item *ti = proto_tree_add_item(tree, proto_pidp11, tvb, 0, -1, ENC_NA);
+	pidp11_tree = proto_item_add_subtree(ti, ett_pidp11);
+	DEBUG("added subtree");
 
 	if(conversation_request_val && (pidp11_direction == 1)) {
 		// Server (Panel)
@@ -704,15 +701,16 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 		} else if(TERTIARY(conversation_request_val->pidp11_blinken_function)) {
 			g_snprintf(buf, BUF_LEN, "Server (%s)", high_funcs[conversation_request_val->pidp11_blinken_function - TERTIARY_MIN]);
 		} else {
-			g_snprintf(buf, BUF_LEN, "Server (not matched)");
+			REPORT_DISSECTOR_BUG("Unrecognized packet function %d", conversation_request_val->pidp11_blinken_function);
+			g_snprintf(buf, BUF_LEN, "unknown");
 		}
 
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
 
 		offset += len;
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_direction, tvb, offset, len, ENC_BIG_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_direction, tvb, offset, len, ENC_BIG_ENDIAN);
 
 		proto_tree_add_uint(pidp11_tree, hf_pidp11_blinken_function, tvb, 0, 0, conversation_request_val->pidp11_blinken_function);
 
@@ -736,19 +734,19 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_in_count, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_in_count, tvb, offset, len, ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_count, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_count, tvb, offset, len, ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_in_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_in_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_out_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
 				proto_tree_add_uint(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, 0, 0, conversation_request_val->pidp11_control_index);
 
@@ -758,41 +756,39 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_input, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_input, tvb, offset, len, ENC_BIG_ENDIAN);
 				int is_input = tvb_get_ntohl(tvb, offset);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_type, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_type, tvb, offset, len, ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_radix, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_radix, tvb, offset, len, ENC_BIG_ENDIAN);
 				int radix = tvb_get_ntohl(tvb, offset);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_bits, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_bits, tvb, offset, len, ENC_BIG_ENDIAN);
 				int bits = tvb_get_ntohl(tvb, offset);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 				int bytes = tvb_get_ntohl(tvb, offset);
 
 				// We have to add each control to a list, so we can find it again, when we interpret the
 				// control values.
 				if(!insert_one_control(is_input, conversation_request_val->pidp11_control_index, name, radix, bits, bytes)) {
-					expert_ti = proto_tree_add_string_format(pidp11_tree, hf_pidp11_expert, tvb, 0, 0, "", "No room to insert %s", name);
-					expert_add_info(pinfo, expert_ti, &ei_pidp11_expert);
-
+					REPORT_DISSECTOR_BUG("No room to insert %s", name);
 					wmem_free(wmem_epan_scope(), name);
 				}
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
 				// Nothing to do.
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolvalue_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolvalue_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 				value_bytes_len = tvb_get_ntohl(tvb, offset);
 				DEBUG("value_bytes_len=%d", value_bytes_len);
 
@@ -814,23 +810,25 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 						if(pVal) {
 							value = 0;
 							k2 = k;
-							for(j = 0; j < pVal->pidp11_control_bytes; j++) {
+							for(j = 0; j < pVal->bytes; j++) {
 								if(k >= value_bytes_len) {
 									DEBUG("No more data");
 									goto QUIT_INPUT;
 								}
 								value |= value_bytes_val[k++] << (j * 8);
 							}
-							DEBUG("input %d, >>>%s<<< = %09o", i, pVal->pidp11_control_name, value);
-							if(pVal->pidp11_control_radix == 8) {
-								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->pidp11_control_bytes,
-										"", "%s = 0%09o", pVal->pidp11_control_name, value & MASK(pVal->pidp11_control_bits));
-							} else if(pVal->pidp11_control_radix == 10) {
-								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->pidp11_control_bytes,
-										"", "%s = %8d", pVal->pidp11_control_name, value & MASK(pVal->pidp11_control_bits));
-							} else if(pVal->pidp11_control_radix == 16) {
-								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->pidp11_control_bytes,
-										"", "%s = 0x%08x", pVal->pidp11_control_name, value & MASK(pVal->pidp11_control_bits));
+							DEBUG("input %d, >>>%s<<< = %09o", i, pVal->name, value);
+							if(pVal->radix == 8) {
+								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->bytes,
+										"", "%s = 0%09o", pVal->name, value & MASK(pVal->bits));
+							} else if(pVal->radix == 10) {
+								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->bytes,
+										"", "%s = %8d", pVal->name, value & MASK(pVal->bits));
+							} else if(pVal->radix == 16) {
+								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->bytes,
+										"", "%s = 0x%08x", pVal->name, value & MASK(pVal->bits));
+							} else {
+								REPORT_DISSECTOR_BUG("Unknown radix %d", pVal->radix);
 							}
 						}
 					}
@@ -838,67 +836,67 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 				QUIT_INPUT: ;
 			} else if(conversation_request_val->pidp11_blinken_function == RPC_PARAM_GET) {
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_class, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_class, tvb, offset, len, ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_handle, tvb, offset, len, ENC_BIG_ENDIAN);
 
 				offset += len;
 				len = SU;
-				ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_param_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+				proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_param_handle, tvb, offset, len, ENC_BIG_ENDIAN);
 				int handle = tvb_get_ntohl(tvb, offset);
 
 				offset += len;
 				len = SU;
 				if(handle == RPC_PARAM_HANDLE_PANEL_BLINKENBOARDS_STATE) {
-					ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_state_value, tvb, offset, len, ENC_BIG_ENDIAN);
+					proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_state_value, tvb, offset, len, ENC_BIG_ENDIAN);
 				} else if(handle == RPC_PARAM_HANDLE_PANEL_MODE) {
-					ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_mode_value, tvb, offset, len, ENC_BIG_ENDIAN);
+					proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_mode_value, tvb, offset, len, ENC_BIG_ENDIAN);
 				}
 			}
 		}
 	} else {
 		// Client (SIMH)
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_sequence_number, tvb, offset, len, ENC_LITTLE_ENDIAN);
 
 		offset += len;
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_direction, tvb, offset, len, ENC_BIG_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_direction, tvb, offset, len, ENC_BIG_ENDIAN);
 
 		offset += len;
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_version, tvb, offset, len, ENC_BIG_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_version, tvb, offset, len, ENC_BIG_ENDIAN);
 
 		offset += len;
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_program_number, tvb, offset, len, ENC_BIG_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_program_number, tvb, offset, len, ENC_BIG_ENDIAN);
 
 		offset += len;
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_blinken_version, tvb, offset, len, ENC_BIG_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_blinken_version, tvb, offset, len, ENC_BIG_ENDIAN);
 
 		offset += len;
 		len = SU;
-		ti = proto_tree_add_item(pidp11_tree, hf_pidp11_blinken_function, tvb, offset, len, ENC_BIG_ENDIAN);
+		proto_tree_add_item(pidp11_tree, hf_pidp11_blinken_function, tvb, offset, len, ENC_BIG_ENDIAN);
 
 		offset = 0x28;
 		if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETINFO) {
 			// Nothing to do.
 		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANELINFO) {
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
 		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETCONTROLINFO) {
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
 
 			offset += len;
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
 		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_SETPANEL_CONTROLVALUES) {
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
 
 			offset += len;
 			len = SU;
@@ -907,7 +905,7 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 
 			offset += len;
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolvalue_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_getcontrolvalue_bytes, tvb, offset, len, ENC_BIG_ENDIAN);
 			value_bytes_len = tvb_get_ntohl(tvb, offset);
 			DEBUG("value_bytes_len=%d", value_bytes_len);
 
@@ -929,23 +927,25 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 					if(pVal) {
 						value = 0;
 						k2 = k;
-						for(j = 0; j < pVal->pidp11_control_bytes; j++) {
+						for(j = 0; j < pVal->bytes; j++) {
 							if(k >= value_bytes_len) {
 								DEBUG("No more data");
 								goto QUIT_OUTPUT;
 							}
 							value |= value_bytes_val[k++] << (j * 8);
 						}
-						DEBUG("output %d, >>>%s<<< = %09o", i, pVal->pidp11_control_name, value);
-						if(pVal->pidp11_control_radix == 8) {
-							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->pidp11_control_bytes,
-									"", "%s = 0%09o", pVal->pidp11_control_name, value & MASK(pVal->pidp11_control_bits));
-						} else if(pVal->pidp11_control_radix == 10) {
-							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->pidp11_control_bytes,
-									"", "%s = %8d", pVal->pidp11_control_name, value & MASK(pVal->pidp11_control_bits));
-						} else if(pVal->pidp11_control_radix == 16) {
-							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->pidp11_control_bytes,
-									"", "%s = 0x%08x", pVal->pidp11_control_name, value & MASK(pVal->pidp11_control_bits));
+						DEBUG("output %d, >>>%s<<< = %09o", i, pVal->name, value);
+						if(pVal->radix == 8) {
+							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->bytes,
+									"", "%s = 0%09o", pVal->name, value & MASK(pVal->bits));
+						} else if(pVal->radix == 10) {
+							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->bytes,
+									"", "%s = %8d", pVal->name, value & MASK(pVal->bits));
+						} else if(pVal->radix == 16) {
+							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->bytes,
+									"", "%s = 0x%08x", pVal->name, value & MASK(pVal->bits));
+						} else {
+							REPORT_DISSECTOR_BUG("Unknown radix %d", pVal->radix);
 						}
 					}
 				}
@@ -953,18 +953,18 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 			QUIT_OUTPUT: ;
 		} else if(pidp11_blinken_function == RPC_BLINKENLIGHT_API_GETPANEL_CONTROLVALUES) {
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_getpanelinfo_index, tvb, offset, len, ENC_BIG_ENDIAN);
 		} else if(pidp11_blinken_function == RPC_PARAM_GET) {
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_class, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_class, tvb, offset, len, ENC_BIG_ENDIAN);
 
 			offset += len;
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_obj_handle, tvb, offset, len, ENC_BIG_ENDIAN);
 
 			offset += len;
 			len = SU;
-			ti = proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_param_handle, tvb, offset, len, ENC_BIG_ENDIAN);
+			proto_tree_add_item(pidp11_tree, hf_pidp11_rpc_param_get_param_handle, tvb, offset, len, ENC_BIG_ENDIAN);
 		}
 	}
 
@@ -979,12 +979,9 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 void
 proto_register_pidp11(void)
 {
-	expert_module_t *expert_pidp11;
-
 	// Setup list of header fields.  Unfortunately, we cannot add these dynamically,
-	// so we have to create an arbitrary number of "hf_pidp11_getcontrolvalue"
-	// elements.  We only need 16 of them, because there are 16 outputs (and
-	// 13 inputs).
+	// so we have to create a fixed number of "hf_pidp11_getcontrolvalue" elements.
+	// We need 16 of them, because there are 16 outputs (and 13 inputs).
 	static hf_register_info hf[] = {
 		{ &hf_pidp11_sequence_number,		{ "Sequence Number",	"pidp11.seq_num",	FT_UINT32,	BASE_HEX,	NULL, 0, NULL, HFILL } },
 		{ &hf_pidp11_direction,			{ "Direction",		"pidp11.direction",	FT_UINT32,	BASE_NONE,	VALS(RPC_direction), 0, NULL, HFILL } },
@@ -1029,16 +1026,11 @@ proto_register_pidp11(void)
 		{ &hf_pidp11_rpc_param_get_param_handle,{ "Parameter Handle",	"pidp11.param_handle",	FT_UINT32,	BASE_NONE,	VALS(param_handle), 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_state_value,	{ "State Value",	"pidp11.state_value",	FT_UINT32,	BASE_NONE,	VALS(state_param_value), 0, NULL, HFILL } },
 		{ &hf_pidp11_rpc_param_get_mode_value,	{ "Mode Value",		"pidp11.mode_value",	FT_UINT32,	BASE_NONE,	VALS(mode_param_value), 0, NULL, HFILL } },
-		{ &hf_pidp11_expert,			{ "Expert",		"pidp11.expert",	FT_STRINGZ,	BASE_NONE,	NULL, 0, NULL, HFILL } },
 	};
 
 	// Setup protocol subtree array.
-	static gint *sta[] = {
-		&top_level,
-	};
-
-	static ei_register_info ei[] = {
-		{ &ei_pidp11_expert, { "pidp11.expert", PI_MALFORMED, PI_ERROR, "No room to insert", EXPFILL } }
+	static gint *ett[] = {
+		&ett_pidp11,
 	};
 
 	DEBUG("start");
@@ -1048,10 +1040,7 @@ proto_register_pidp11(void)
 
 	// Register the header fields and subtrees.
 	proto_register_field_array(proto_pidp11, hf, array_length(hf));
-	proto_register_subtree_array(sta, array_length(sta));
-
-	expert_pidp11 = expert_register_protocol(proto_pidp11);
-	expert_register_field_array(expert_pidp11, ei, array_length(ei));
+	proto_register_subtree_array(ett, array_length(ett));
 
 	pidp11_request_hash = wmem_map_new_autoreset(wmem_epan_scope(), wmem_epan_scope(), pidp11_hash, pidp11_equal);
 
@@ -1063,52 +1052,50 @@ proto_register_pidp11(void)
 static gboolean
 test_pidp11(packet_info *pinfo _U_, tvbuff_t *tvb, int offset _U_, void *data _U_)
 {
+	guint		l;
+	int		pidp11_direction;
+	int		pidp11_rpc_version;
+	int		pidp11_program_number;
+	int		pidp11_blinken_version;
+	int		pidp11_blinken_function;
+
 	DEBUG("start");
-	tvb_reported_length(tvb);
 
 	// Check that the packet is long enough for it to belong to us.  The
 	// shortest has MIN_LEN bytes of data after the UDP header.
-	if(tvb_reported_length(tvb) < MIN_LEN) {
-		DEBUG("replen too short");
+	if((l = tvb_reported_length(tvb)) < MIN_LEN) {
+		DEBUG("reported length too short, %d < %d", l, MIN_LEN);
 		return FALSE;
 	}
 
-	// Check that there's enough data present to run the heuristics. If
+	// Check that there's enough data present to run the heuristics.  If
 	// there isn't, reject the packet.
-	DEBUG("caplen %d", tvb_captured_length(tvb));
-	if(tvb_captured_length(tvb) < MIN_LEN) {
-		DEBUG("caplen too short");
+	if((l = tvb_captured_length(tvb)) < MIN_LEN) {
+		DEBUG("captured length too short, %d < %d", l, MIN_LEN);
 		return FALSE;
 	}
 
 	// Fetch some values from the packet header.
-	pidp11_sequence_number		= tvb_get_ntohl(tvb, 0x00);
 	pidp11_direction		= tvb_get_ntohl(tvb, 0x04);
 	pidp11_rpc_version		= tvb_get_ntohl(tvb, 0x08);
 	pidp11_program_number		= tvb_get_ntohl(tvb, 0x0c);
 	pidp11_blinken_version		= tvb_get_ntohl(tvb, 0x10);
 	pidp11_blinken_function		= tvb_get_ntohl(tvb, 0x14);
-	DEBUG("seq %x", pidp11_sequence_number);
-	DEBUG("dir %d", pidp11_direction);
-	DEBUG("rpc %d", pidp11_rpc_version);
-	DEBUG("pn %d", pidp11_program_number);
-	DEBUG("bv %d", pidp11_blinken_version);
-	DEBUG("bf %d", pidp11_blinken_function);
 
 	if(pidp11_direction == 0) {
 		// To server.
 		if(pidp11_rpc_version != 2) {
-			DEBUG("to server but wrong rpc version");
+			DEBUG("to server but wrong rpc version, %d != %d", pidp11_rpc_version, 2);
 			return FALSE;
 		}
 
 		if(pidp11_program_number != 99) {
-			DEBUG("to server but wrong program");
+			DEBUG("to server but wrong program, %d != %d", pidp11_program_number, 99);
 			return FALSE;
 		}
 
 		if(pidp11_blinken_version != 1) {
-			DEBUG("to server but wrong blinken version");
+			DEBUG("to server but wrong blinken version, %d != %d", pidp11_blinken_version, 1);
 			return FALSE;
 		}
 
@@ -1120,28 +1107,28 @@ test_pidp11(packet_info *pinfo _U_, tvbuff_t *tvb, int offset _U_, void *data _U
 	} else if(pidp11_direction == 1) {
 		// To client.
 		if(pidp11_rpc_version != 0) {
-			DEBUG("to client but bad rpc version");
+			DEBUG("to client but wrong rpc version, %d != %d", pidp11_rpc_version, 0);
 			return FALSE;
 		}
 
 		if(pidp11_program_number != 0) {
-			DEBUG("to client but bad program number");
+			DEBUG("to client but wrong program, %d != %d", pidp11_program_number, 0);
 			return FALSE;
 		}
 
 		if(pidp11_blinken_version != 0) {
-			DEBUG("to client but bad blinken version");
+			DEBUG("to client but wrong blinken version, %d != %d", pidp11_blinken_version, 0);
 			return FALSE;
 		}
 
 		if(pidp11_blinken_function != 0) {
-			DEBUG("to client but bad blinken function");
+			DEBUG("to client but bad blinken function, %d != %d", pidp11_blinken_function, 0);
 			return FALSE;
 		}
 
 		DEBUG("good packet to client");
 	} else {
-		DEBUG("bad packet direction");
+		DEBUG("bad packet direction, %d, should be 0 or 1", pidp11_direction);
 		return FALSE;
 	}
 
