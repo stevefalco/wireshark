@@ -856,13 +856,13 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 							DEBUG("input %d, >>>%s<<< = %09o", i, pVal->name, value);
 							if(pVal->radix == 8) {
 								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->bytes,
-										"", "%s = 0%09o", pVal->name, value & MASK(pVal->bits));
+										"", "%s = %#o", pVal->name, value & MASK(pVal->bits));
 							} else if(pVal->radix == 10) {
 								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->bytes,
-										"", "%s = %8d", pVal->name, value & MASK(pVal->bits));
+										"", "%s = %d", pVal->name, value & MASK(pVal->bits));
 							} else if(pVal->radix == 16) {
 								proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x20, SU * pVal->bytes,
-										"", "%s = 0x%08x", pVal->name, value & MASK(pVal->bits));
+										"", "%s = %#x", pVal->name, value & MASK(pVal->bits));
 							} else {
 								REPORT_DISSECTOR_BUG("Unknown radix %d", pVal->radix);
 							}
@@ -973,13 +973,13 @@ dissect_pidp11(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _
 						DEBUG("output %d, >>>%s<<< = %09o", i, pVal->name, value);
 						if(pVal->radix == 8) {
 							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->bytes,
-									"", "%s = 0%09o", pVal->name, value & MASK(pVal->bits));
+									"", "%s = %#o", pVal->name, value & MASK(pVal->bits));
 						} else if(pVal->radix == 10) {
 							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->bytes,
-									"", "%s = %8d", pVal->name, value & MASK(pVal->bits));
+									"", "%s = %d", pVal->name, value & MASK(pVal->bits));
 						} else if(pVal->radix == 16) {
 							proto_tree_add_string_format(pidp11_tree, *slots[i], tvb, SU * k2 + 0x34, SU * pVal->bytes,
-									"", "%s = 0x%08x", pVal->name, value & MASK(pVal->bits));
+									"", "%s = %#x", pVal->name, value & MASK(pVal->bits));
 						} else {
 							REPORT_DISSECTOR_BUG("Unknown radix %d", pVal->radix);
 						}
