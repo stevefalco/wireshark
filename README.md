@@ -1,3 +1,10 @@
+PiDP-11 Specific info
+---------------------
+
+Here is a screenshot showing a decoded PiDP-11 message:
+
+<img src="screenshots/capture.jpg" >
+
 General Information
 -------------------
 
